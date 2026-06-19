@@ -69,7 +69,8 @@ def _get_device() -> torch.device:
     """Return the current device (GPU if available, else CPU)."""
     global _DEVICE
     if _DEVICE is None:
-        _DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        from ilgan.utils.device import get_device
+        _DEVICE = get_device()
     return _DEVICE
 
 
@@ -93,6 +94,10 @@ def _preprocess_inception(images: torch.Tensor) -> torch.Tensor:
         Shape ``[B, 3, 299, 299]``, normalised with ImageNet mean/std,
         on the same device as the input.
     """
+    # Move input to the model's device (handles CPU/MPS/CUDA)
+    device = _get_device()
+    images = images.to(device)
+    
     # Resize to 299×299 using bilinear interpolation
     if images.shape[-1] != _INCEPTION_IMAGE_SIZE or images.shape[-2] != _INCEPTION_IMAGE_SIZE:
         images = F.interpolate(
@@ -231,9 +236,17 @@ class FIDCalculator:
     """
 
     def __init__(self, device: Optional[torch.device] = None) -> None:
+        global _DEVICE, _FID_MODEL
         if device is not None:
-            global _DEVICE
             _DEVICE = device
+            # If the FID model is already cached on a different device, move it
+            if _FID_MODEL is not None:
+                try:
+                    model_device = next(_FID_MODEL.parameters()).device
+                    if str(model_device) != str(device):
+                        _FID_MODEL = _FID_MODEL.to(device)
+                except (StopIteration, RuntimeError):
+                    pass
 
         self._real_features: List[torch.Tensor] = []
         self._fake_features: List[torch.Tensor] = []
@@ -254,9 +267,10 @@ class FIDCalculator:
             Shape ``[B, 2048]``, extracted features.
         """
         model = _get_fid_model()
-        device = _get_device()
+        # Use the model's device (handles CPU/MPS/CUDA consistently)
+        model_device = next(model.parameters()).device
 
-        images = images.to(device)
+        images = images.to(model_device)
         preprocessed = _preprocess_inception(images)
 
         with torch.no_grad():
@@ -533,9 +547,17 @@ class InceptionScoreCalculator:
         device: Optional[torch.device] = None,
         splits: int = 10,
     ) -> None:
+        global _DEVICE, _IS_MODEL
         if device is not None:
-            global _DEVICE
             _DEVICE = device
+            # If the IS model is already cached on a different device, move it
+            if _IS_MODEL is not None:
+                try:
+                    model_device = next(_IS_MODEL.parameters()).device
+                    if str(model_device) != str(device):
+                        _IS_MODEL = _IS_MODEL.to(device)
+                except (StopIteration, RuntimeError):
+                    pass
 
         if splits < 1:
             raise ValueError(f"splits must be >= 1, got {splits}")
@@ -573,9 +595,9 @@ class InceptionScoreCalculator:
             Shape ``[B, C, H, W]``, values in ``[-1, 1]``.
         """
         model = _get_is_model()
-        device = _get_device()
+        model_device = next(model.parameters()).device
 
-        images = images.to(device)
+        images = images.to(model_device)
         preprocessed = _preprocess_inception(images)
 
         with torch.no_grad():

@@ -69,7 +69,8 @@ _DEVICE: Optional[torch.device] = None
 def _get_device() -> torch.device:
     global _DEVICE
     if _DEVICE is None:
-        _DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        from ilgan.utils.device import get_device
+        _DEVICE = get_device()
     return _DEVICE
 
 
@@ -91,6 +92,8 @@ def _preprocess_inception(images: torch.Tensor) -> torch.Tensor:
     torch.Tensor
         Shape ``[B, 3, 299, 299]``, normalised with ImageNet mean/std.
     """
+    device = _get_device()
+    images = images.to(device)
     if images.shape[-1] != _INCEPTION_IMAGE_SIZE or images.shape[-2] != _INCEPTION_IMAGE_SIZE:
         images = F.interpolate(
             images,
@@ -118,6 +121,8 @@ def _preprocess_vgg(images: torch.Tensor) -> torch.Tensor:
     torch.Tensor
         Shape ``[B, 3, 224, 224]``, normalised with ImageNet mean/std.
     """
+    device = _get_device()
+    images = images.to(device)
     if images.shape[-1] != _LPIPS_IMAGE_SIZE or images.shape[-2] != _LPIPS_IMAGE_SIZE:
         images = F.interpolate(
             images,
@@ -233,10 +238,10 @@ class PrecisionRecallCalculator:
             Shape ``[B, C, H, W]``, values in ``[-1, 1]``.
         """
         model = _get_fid_model()
-        device = _get_device()
+        model_device = next(model.parameters()).device
 
-        real_feats = model(_preprocess_inception(real_images.to(device))).cpu()
-        fake_feats = model(_preprocess_inception(fake_images.to(device))).cpu()
+        real_feats = model(_preprocess_inception(real_images.to(model_device))).cpu()
+        fake_feats = model(_preprocess_inception(fake_images.to(model_device))).cpu()
 
         self._real_features.append(real_feats)
         self._fake_features.append(fake_feats)
@@ -351,9 +356,9 @@ class DensityCoverageCalculator:
 
     def update(self, real_images: torch.Tensor, fake_images: torch.Tensor) -> None:
         model = _get_fid_model()
-        device = _get_device()
-        real_feats = model(_preprocess_inception(real_images.to(device))).cpu()
-        fake_feats = model(_preprocess_inception(fake_images.to(device))).cpu()
+        model_device = next(model.parameters()).device
+        real_feats = model(_preprocess_inception(real_images.to(model_device))).cpu()
+        fake_feats = model(_preprocess_inception(fake_images.to(model_device))).cpu()
         self._real_features.append(real_feats)
         self._fake_features.append(fake_feats)
 
@@ -613,9 +618,9 @@ class SpatialFIDCalculator:
     def update(self, real_images: torch.Tensor, fake_images: torch.Tensor) -> None:
         """Accumulate spatial features from a batch."""
         model = _get_sfid_model()
-        device = _get_device()
-        real_feats = model(_preprocess_inception(real_images.to(device))).cpu()
-        fake_feats = model(_preprocess_inception(fake_images.to(device))).cpu()
+        model_device = next(model.parameters()).device
+        real_feats = model(_preprocess_inception(real_images.to(model_device))).cpu()
+        fake_feats = model(_preprocess_inception(fake_images.to(model_device))).cpu()
         self._real_features.append(real_feats)
         self._fake_features.append(fake_feats)
 

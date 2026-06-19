@@ -12,6 +12,7 @@ from ilgan.data.dataset import (
 )
 from ilgan.data.streaming_voc import (
     StreamingVOCDataset,
+    SyntheticVOCDataset,
     get_streaming_loaders,
     VOC_CLASSES,
     VOC_CLASS_TO_ID,
@@ -41,6 +42,7 @@ __all__ = [
     "resize_with_pad",
     # Streaming VOC
     "StreamingVOCDataset",
+    "SyntheticVOCDataset",
     "get_streaming_loaders",
     "VOC_CLASSES",
     "VOC_CLASS_TO_ID",

@@ -655,6 +655,135 @@ class StreamingVOCDataset(torch.utils.data.Dataset):
         )
 
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SyntheticVOCDataset — generates random VOC-like data for testing
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class SyntheticVOCDataset(torch.utils.data.Dataset):
+    """Generates random synthetic VOC-like data for testing the training
+    pipeline without requiring network access to the VOC mirror.
+
+    Each sample is a random noise image with randomly placed bounding boxes
+    and class labels.  This is useful for:
+
+    - Verifying the training pipeline runs end-to-end.
+    - Testing device support (MPS, CUDA, CPU).
+    - Profiling memory and speed without data loading bottlenecks.
+
+    Parameters
+    ----------
+    num_samples : int
+        Number of synthetic samples to generate.
+    image_size : int
+        Spatial size of generated images (square).
+    max_boxes : int
+        Maximum number of bounding boxes per sample.
+    num_classes : int
+        Number of object classes (default 20, matching VOC).
+    seed : int
+        Random seed for reproducibility.
+    """
+
+    def __init__(
+        self,
+        num_samples: int = 100,
+        image_size: int = 128,
+        max_boxes: int = 20,
+        num_classes: int = 20,
+        seed: int = 42,
+    ) -> None:
+        super().__init__()
+        self._num_samples = num_samples
+        self._image_size = image_size
+        self._max_boxes = max_boxes
+        self._num_classes = num_classes
+        self._seed = seed
+        self._rng = random.Random(seed)
+        self._np_rng = np.random.RandomState(seed)
+
+    @property
+    def image_size(self) -> int:
+        return self._image_size
+
+    @property
+    def split(self) -> str:
+        return "train"
+
+    @property
+    def max_boxes(self) -> int:
+        return self._max_boxes
+
+    @property
+    def class_names(self) -> List[str]:
+        return VOC_CLASSES[:self._num_classes]
+
+    @property
+    def num_classes(self) -> int:
+        return self._num_classes
+
+    def __len__(self) -> int:
+        return self._num_samples
+
+    def __getitem__(self, idx: int) -> Sample:
+        """Generate a random synthetic sample."""
+        # Random image in [-1, 1] (clamped to ensure valid range)
+        image = torch.randn(3, self._image_size, self._image_size) * 0.3
+        image = image.clamp(-1.0, 1.0)
+
+        # Random number of boxes (0 to max_boxes)
+        n_boxes = self._rng.randint(0, self._max_boxes)
+
+        if n_boxes == 0:
+            boxes = torch.zeros((0, 4), dtype=torch.float32)
+            labels = torch.zeros(0, dtype=torch.long)
+        else:
+            # Random boxes with reasonable sizes
+            cx = torch.rand(n_boxes)
+            cy = torch.rand(n_boxes)
+            w = torch.rand(n_boxes) * 0.3 + 0.05  # 0.05 to 0.35
+            h = torch.rand(n_boxes) * 0.3 + 0.05
+            boxes = torch.stack([cx, cy, w, h], dim=1)
+            labels = torch.randint(0, self._num_classes, (n_boxes,))
+
+        # Pad to max_boxes
+        if n_boxes < self._max_boxes:
+            pad_n = self._max_boxes - n_boxes
+            boxes = torch.cat([
+                boxes,
+                torch.full((pad_n, 4), fill_value=-1.0, dtype=torch.float32),
+            ], dim=0)
+            labels = torch.cat([
+                labels,
+                torch.full((pad_n,), fill_value=-1, dtype=torch.long),
+            ], dim=0)
+            valid_mask = torch.cat([
+                torch.ones(n_boxes, dtype=torch.bool),
+                torch.zeros(pad_n, dtype=torch.bool),
+            ], dim=0)
+        else:
+            valid_mask = torch.ones(self._max_boxes, dtype=torch.bool)
+
+        return Sample(
+            image=image,
+            boxes=boxes,
+            labels=labels,
+            valid_mask=valid_mask,
+            image_path=f"synthetic/{idx:06d}.png",
+            metadata={"split": "train", "stem": f"{idx:06d}", "synthetic": True},
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"SyntheticVOCDataset("
+            f"samples={self._num_samples}, "
+            f"size={self._image_size}, "
+            f"max_boxes={self._max_boxes}, "
+            f"classes={self._num_classes})"
+        )
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Factory: get_streaming_loaders
 # ──────────────────────────────────────────────────────────────────────────────
@@ -666,12 +795,18 @@ def get_streaming_loaders(
     max_boxes: int = 20,
     num_workers: int = 4,
     cache_size: int = 256,
+    force_synthetic: bool = False,
+    synthetic_samples: int = 100,
 ) -> Tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
     """Create train and validation DataLoaders using the streaming VOC dataset.
 
     This is a drop-in replacement for
     ``ilgan.data.dataloader.get_train_val_loaders`` that uses
     ``StreamingVOCDataset`` instead of ``YOLODataset``.
+
+    If the VOC mirror is unreachable (e.g., no internet or firewall), the
+    function falls back to ``SyntheticVOCDataset`` which generates random
+    VOC-like data for testing purposes.
 
     Parameters
     ----------
@@ -685,33 +820,84 @@ def get_streaming_loaders(
         Number of data loading workers.
     cache_size : int
         LRU cache size per dataset.
+    force_synthetic : bool
+        If True, always use synthetic data (for testing without network).
+    synthetic_samples : int
+        Number of synthetic samples to generate.
 
     Returns
     -------
     train_loader : DataLoader
     val_loader : DataLoader
     """
-    train_dataset = StreamingVOCDataset(
-        split="train",
-        image_size=image_size,
-        max_boxes=max_boxes,
-        cache_size=cache_size,
-    )
+    from ilgan.data.structures import Batch
 
-    val_dataset = StreamingVOCDataset(
-        split="val",
-        image_size=image_size,
-        max_boxes=max_boxes,
-        cache_size=cache_size,
-    )
+    def _collate_fn(samples):
+        return Batch.collate(samples, global_max_boxes=max_boxes)
+
+    if force_synthetic:
+        train_dataset = SyntheticVOCDataset(
+            num_samples=synthetic_samples,
+            image_size=image_size,
+            max_boxes=max_boxes,
+            num_classes=20,
+            seed=42,
+        )
+        val_dataset = SyntheticVOCDataset(
+            num_samples=max(10, synthetic_samples // 5),
+            image_size=image_size,
+            max_boxes=max_boxes,
+            num_classes=20,
+            seed=43,
+        )
+    else:
+        try:
+            train_dataset = StreamingVOCDataset(
+                split="train",
+                image_size=image_size,
+                max_boxes=max_boxes,
+                cache_size=cache_size,
+            )
+            val_dataset = StreamingVOCDataset(
+                split="val",
+                image_size=image_size,
+                max_boxes=max_boxes,
+                cache_size=cache_size,
+            )
+        except (RuntimeError, OSError, ConnectionError) as e:
+            import warnings
+            warnings.warn(
+                f"Failed to connect to VOC mirror: {e}. "
+                f"Falling back to synthetic data for testing."
+            )
+            train_dataset = SyntheticVOCDataset(
+                num_samples=synthetic_samples,
+                image_size=image_size,
+                max_boxes=max_boxes,
+                num_classes=20,
+                seed=42,
+            )
+            val_dataset = SyntheticVOCDataset(
+                num_samples=max(10, synthetic_samples // 5),
+                image_size=image_size,
+                max_boxes=max_boxes,
+                num_classes=20,
+                seed=43,
+            )
+
+    from ilgan.data.structures import Batch
+
+    def _collate_fn(samples):
+        return Batch.collate(samples, global_max_boxes=max_boxes)
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=False,  # MPS doesn't support pin_memory
         drop_last=True,
+        collate_fn=_collate_fn,
     )
 
     val_loader = torch.utils.data.DataLoader(
@@ -719,8 +905,9 @@ def get_streaming_loaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=False,
         drop_last=False,
+        collate_fn=_collate_fn,
     )
 
     return train_loader, val_loader
@@ -774,6 +961,7 @@ def generate_split_files(output_dir: str = "ilgan/data/voc_splits") -> None:
 
 __all__ = [
     "StreamingVOCDataset",
+    "SyntheticVOCDataset",
     "get_streaming_loaders",
     "VOC_CLASSES",
     "VOC_CLASS_TO_ID",

@@ -314,6 +314,7 @@ class MetricsTracker:
         self._is_calculator.update(fake_images)
 
         # Accumulate advanced image metrics (Precision/Recall, Density/Coverage, sFID)
+        # Move tensors to the model's device (handles CPU/MPS/CUDA)
         self._pr_calculator.update(real_images, fake_images)
         self._dc_calculator.update(real_images, fake_images)
         self._sfid_calculator.update(real_images, fake_images)

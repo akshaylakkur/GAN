@@ -71,7 +71,9 @@ def _make_random_images(
     """Create random images in [-1, 1] range."""
     if seed is not None:
         torch.manual_seed(seed)
-    return torch.rand(B, C, H, W) * 2.0 - 1.0
+    from ilgan.utils.device import get_device
+    device = get_device()
+    return (torch.rand(B, C, H, W) * 2.0 - 1.0).to(device)
 
 
 def _make_identical_images(
@@ -81,7 +83,9 @@ def _make_identical_images(
     W: int = 64,
 ) -> torch.Tensor:
     """Create a batch of identical images (all pixels = 0.5)."""
-    return torch.full((B, C, H, W), 0.5)
+    from ilgan.utils.device import get_device
+    device = get_device()
+    return torch.full((B, C, H, W), 0.5, device=device)
 
 
 def _make_boxes(
@@ -800,9 +804,10 @@ class TestMetricsTracker(unittest.TestCase):
     """Tests for the MetricsTracker class."""
 
     def setUp(self) -> None:
+        from ilgan.utils.device import get_device
         self.tracker = MetricsTracker(
             num_classes=10,
-            device=torch.device("cpu"),
+            device=get_device(),
         )
         self.B, self.N, self.C, self.H, self.W = 4, 5, 3, 64, 64
 

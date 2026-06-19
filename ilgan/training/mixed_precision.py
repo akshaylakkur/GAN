@@ -507,7 +507,7 @@ def autocast_context(use_amp: bool) -> Generator[Any, None, None]:
     Yields
     ------
     context manager
-        Either ``torch.amp.autocast("cuda")`` or a no-op context manager.
+        Either ``torch.amp.autocast(device_type)`` or a no-op context manager.
 
     Example
     -------
@@ -523,8 +523,13 @@ def autocast_context(use_amp: bool) -> Generator[Any, None, None]:
     ...     scaler.scale_loss(loss, optimizer).backward()
     ...     scaler.step(optimizer)
     """
-    if use_amp and _CUDA_AVAILABLE:
-        with autocast("cuda"):
+    if use_amp:
+        from ilgan.utils.device import get_amp_device_type
+        device_type = get_amp_device_type()
+        if device_type in ("cuda", "mps"):
+            with autocast(device_type):
+                yield
+        else:
             yield
     else:
         yield

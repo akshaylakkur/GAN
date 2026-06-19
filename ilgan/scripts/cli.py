@@ -185,7 +185,9 @@ def _set_seed(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    if torch.cuda.is_available():
+    from ilgan.utils.device import get_device_info
+    device_info = get_device_info()
+    if device_info['cuda_available'] or device_info['mps_available']:
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
         # Deterministic mode for reproducibility

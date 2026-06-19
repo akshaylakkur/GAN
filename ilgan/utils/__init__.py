@@ -1,5 +1,6 @@
 """
-ILGAN utilities — shared helpers for configuration, logging, visualization, and more.
+ILGAN utilities — shared helpers for configuration, logging, visualization,
+device management, and experiment tracking.
 """
 
 from ilgan.utils.config import Config
@@ -11,6 +12,14 @@ from ilgan.utils.visualization import (
     save_image_grid,
     save_sample_outputs,
     plot_loss_curves,
+)
+from ilgan.utils.device import (
+    get_device,
+    get_device_name,
+    get_device_info,
+    supports_amp,
+    get_amp_device_type,
+    DEVICE,
 )
 
 __all__ = [
@@ -24,4 +33,10 @@ __all__ = [
     "save_image_grid",
     "save_sample_outputs",
     "plot_loss_curves",
+    "get_device",
+    "get_device_name",
+    "get_device_info",
+    "supports_amp",
+    "get_amp_device_type",
+    "DEVICE",
 ]

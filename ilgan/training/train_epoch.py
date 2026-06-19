@@ -59,6 +59,7 @@ from ilgan.training.gradient_utils import (
 from ilgan.training.mixed_precision import AMPScaler
 from ilgan.utils.config import Config
 from ilgan.utils.logger import Logger
+from ilgan.utils.device import get_amp_device_type
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -521,13 +522,13 @@ def train_epoch(
         # ── 4c. Generator forward pass ────────────────────────────────────────
         # The generator runs under autocast if AMP is enabled.
         # We use torch.amp.autocast() context if amp_scaler is enabled.
-        with torch.amp.autocast("cuda", enabled=amp_scaler.is_enabled):
+        with torch.amp.autocast(get_amp_device_type(), enabled=amp_scaler.is_enabled):
             gen_outputs = generator(z)
 
         # ── 4d. Discriminator forward + loss (every step) ─────────────────────
         # We need to run the discriminator on real and fake images.
         # The discriminator loss is computed via the loss_aggregator.
-        with torch.amp.autocast("cuda", enabled=amp_scaler.is_enabled):
+        with torch.amp.autocast(get_amp_device_type(), enabled=amp_scaler.is_enabled):
             d_loss = loss_aggregator.discriminator_loss(
                 generator_outputs=gen_outputs,
                 batch=batch_dict,
@@ -559,7 +560,7 @@ def train_epoch(
             # However, we can reuse gen_outputs if we haven't modified the graph.
             # The generator outputs are detached from the discriminator graph,
             # so we can safely reuse them.
-            with torch.amp.autocast("cuda", enabled=amp_scaler.is_enabled):
+            with torch.amp.autocast(get_amp_device_type(), enabled=amp_scaler.is_enabled):
                 g_loss = loss_aggregator.generator_loss(
                     generator_outputs=gen_outputs,
                     batch=batch_dict,

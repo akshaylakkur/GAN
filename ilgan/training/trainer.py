@@ -67,9 +67,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 
 from ilgan.data.dataloader import GANDataloader, get_train_val_loaders
+from ilgan.utils.device import get_device, get_device_info, supports_amp, get_amp_device_type
 from ilgan.data.streaming_voc import get_streaming_loaders
 from ilgan.data.structures import Batch
 from ilgan.losses import LossAggregator
@@ -176,9 +177,7 @@ class ILGANTrainer:
         self.logger: Logger = logger
 
         # ── Device detection ──────────────────────────────────────────────
-        self.device: torch.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu"
-        )
+        self.device: torch.device = get_device()
         self.logger.info(
             f"ILGANTrainer initialised — device: {self.device}"
         )

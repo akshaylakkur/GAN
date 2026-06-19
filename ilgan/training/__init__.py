@@ -285,7 +285,8 @@ def build_trainer(
     # ── 4. Construct the trainer ─────────────────────────────────────────
     logger.info("Building ILGANTrainer via build_trainer factory...")
     logger.info(f"  Config path: {config._default_path}")
-    logger.info(f"  Device: {'cuda' if __import__('torch').cuda.is_available() else 'cpu'}")
+    from ilgan.utils.device import get_device_name
+    logger.info(f"  Device: {get_device_name()}")
     logger.info(f"  Latent dim: {config.model.latent_dim}")
     logger.info(f"  Image size: {config.data.image_size}")
     logger.info(f"  Batch size: {config.data.batch_size}")

@@ -148,7 +148,8 @@ def build_metrics_tracker(config: Any) -> MetricsTracker:
         ) from e
 
     # ── Device selection ─────────────────────────────────────────────────
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    from ilgan.utils.device import get_device
+    device = get_device()
 
     # ── Derive joint score weights from loss configuration ──────────────
     # Read loss weights with safe defaults
