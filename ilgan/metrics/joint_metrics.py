@@ -58,6 +58,13 @@ from ilgan.metrics.image_metrics import (
     compute_image_statistics,
     clear_model_cache,
 )
+from ilgan.metrics.advanced_image_metrics import (
+    PrecisionRecallCalculator,
+    DensityCoverageCalculator,
+    LPIPSCalculator,
+    SpatialFIDCalculator,
+    clear_advanced_model_cache,
+)
 from ilgan.metrics.box_metrics import (
     compute_map,
     compute_giou,
@@ -245,6 +252,12 @@ class MetricsTracker:
         self._is_calculator = InceptionScoreCalculator(device=device)
         self._image_stats_batches: List[Dict[str, Any]] = []
 
+        # ── Advanced image metric accumulators (paper-grade) ──────────────
+        self._pr_calculator = PrecisionRecallCalculator(k=3, device=device)
+        self._dc_calculator = DensityCoverageCalculator(k=3, device=device)
+        self._lpips_calculator = LPIPSCalculator(device=device)
+        self._sfid_calculator = SpatialFIDCalculator(device=device)
+
         # ── Box metric accumulators ──────────────────────────────────────
         self._map_results: List[Dict[str, Any]] = []
         self._giou_results: List[Dict[str, float]] = []
@@ -299,6 +312,11 @@ class MetricsTracker:
 
         # Accumulate Inception Score logits (use fake images)
         self._is_calculator.update(fake_images)
+
+        # Accumulate advanced image metrics (Precision/Recall, Density/Coverage, sFID)
+        self._pr_calculator.update(real_images, fake_images)
+        self._dc_calculator.update(real_images, fake_images)
+        self._sfid_calculator.update(real_images, fake_images)
 
         # Compute and store image statistics
         stats = compute_image_statistics(fake_images)
@@ -507,6 +525,17 @@ class MetricsTracker:
         results["image/inception_score"] = is_mean
         results["image/inception_score_std"] = is_std
 
+        # ── Advanced image metrics ────────────────────────────────────────
+        pr_result = self._pr_calculator.compute()
+        dc_result = self._dc_calculator.compute()
+        sfid_result = self._sfid_calculator.compute()
+
+        results["image/precision"] = pr_result.get("precision", float("nan"))
+        results["image/recall"] = pr_result.get("recall", float("nan"))
+        results["image/density"] = dc_result.get("density", float("nan"))
+        results["image/coverage"] = dc_result.get("coverage", float("nan"))
+        results["image/sfid"] = sfid_result.get("sfid", float("nan"))
+
         # Average image statistics
         if self._image_stats_batches:
             avg_stats = self._average_dicts(self._image_stats_batches)
@@ -668,6 +697,10 @@ class MetricsTracker:
         """
         self._fid_calculator.reset()
         self._is_calculator.reset()
+        self._pr_calculator.reset()
+        self._dc_calculator.reset()
+        self._lpips_calculator.reset()
+        self._sfid_calculator.reset()
         self._image_stats_batches.clear()
         self._map_results.clear()
         self._giou_results.clear()
@@ -720,8 +753,13 @@ class MetricsTracker:
         # Image metrics section
         lines.append("  ┌─ Image Metrics")
         lines.append(f"  │  FID:              {formatted.get('image/fid', 'N/A'):>12s}")
+        lines.append(f"  │  sFID:             {formatted.get('image/sfid', 'N/A'):>12s}")
         lines.append(f"  │  Inception Score:  {formatted.get('image/inception_score', 'N/A'):>12s}  "
                       f"(std: {formatted.get('image/inception_score_std', 'N/A'):>12s})")
+        lines.append(f"  │  Precision:        {formatted.get('image/precision', 'N/A'):>12s}")
+        lines.append(f"  │  Recall:           {formatted.get('image/recall', 'N/A'):>12s}")
+        lines.append(f"  │  Density:          {formatted.get('image/density', 'N/A'):>12s}")
+        lines.append(f"  │  Coverage:         {formatted.get('image/coverage', 'N/A'):>12s}")
         lines.append(f"  │  Mean Pixel:       {formatted.get('image/mean_pixel', 'N/A'):>12s}")
         lines.append(f"  │  Gradient Mag:     {formatted.get('image/mean_gradient_magnitude', 'N/A'):>12s}")
         lines.append(f"  │  Colour Entropy:   {formatted.get('image/color_histogram_entropy', 'N/A'):>12s}")
@@ -900,8 +938,12 @@ def format_metrics(metrics_dict: Dict[str, Any]) -> Dict[str, str]:
 
         if key == "image/fid":
             formatted[key] = f"{value:.2f}"
+        elif key == "image/sfid":
+            formatted[key] = f"{value:.2f}"
         elif key in ("image/inception_score", "image/inception_score_std"):
             formatted[key] = f"{value:.2f}"
+        elif key in ("image/precision", "image/recall", "image/density", "image/coverage"):
+            formatted[key] = f"{value:.4f}"
         elif key.startswith("box/"):
             if key in ("box/num_predictions", "box/num_targets"):
                 formatted[key] = f"{int(value):d}"
