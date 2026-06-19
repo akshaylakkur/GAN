@@ -15,17 +15,15 @@ set -euo pipefail
 
 # ── Config ──────────────────────────────────────────────────────────────────
 STEPS=5
-USE_STREAMING=true
 DEVICE="auto"  # auto, mps, cpu, cuda
 
 # Parse args
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --steps) STEPS="$2"; shift 2 ;;
-        --no-stream) USE_STREAMING=false; shift ;;
         --device) DEVICE="$2"; shift 2 ;;
         --help|-h)
-            echo "Usage: $0 [--steps N] [--no-stream] [--device auto|mps|cpu|cuda]"
+            echo "Usage: $0 [--steps N] [--device auto|mps|cpu|cuda]"
             exit 0
             ;;
         *) echo "Unknown option: $1"; exit 1 ;;
@@ -84,15 +82,9 @@ mkdir -p test_output/checkpoints test_output/logs test_output/samples
 # ── Build config ──────────────────────────────────────────────────────────
 header "Configuration"
 
-if [ "$USE_STREAMING" = true ]; then
-    info "Using streaming VOC dataset (no local data needed)"
-    STREAM_CFG="use_streaming: true"
-    DATA_ROOT=""
-else
-    warn "Using local data directory: ./data"
-    STREAM_CFG="use_streaming: false"
-    DATA_ROOT="--data-root ./data"
-fi
+info "Using streaming VOC dataset (no local data needed)"
+STREAM_CFG="use_streaming: true"
+DATA_ROOT=
 
 cat > /tmp/test_config.yaml << YAMLCFG
 data:

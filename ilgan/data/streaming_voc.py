@@ -20,34 +20,31 @@ Rather than downloading the full 2GB VOC archive upfront, this dataset:
 This keeps the disk footprint to essentially zero — only the current
 batch of processed tensors resides in memory.
 
+**No synthetic data is ever used.**  If the VOC mirror is unreachable,
+the dataset raises a ``RuntimeError``.  The only alternative data source
+is HuggingFace ``datasets`` (via ``get_hf_voc_loaders``), which streams
+real VOC 2012 data from the HuggingFace hub.
+
 Usage
 -----
 ::
 
-    from ilgan.data.streaming_voc import StreamingVOCDataset
+    from ilgan.data.streaming_voc import StreamingVOCDataset, get_streaming_loaders
 
-    dataset = StreamingVOCDataset(
-        split="train",
-        image_size=128,
-        max_boxes=20,
-        cache_size=256,
+    # Direct usage (streams from VOC mirror)
+    dataset = StreamingVOCDataset(split="train", image_size=128, max_boxes=20)
+    sample = dataset[0]
+
+    # Via factory (recommended)
+    train_loader, val_loader = get_streaming_loaders(
+        image_size=128, batch_size=32, max_boxes=20
     )
 
-    sample = dataset[0]
-    # sample.image  -> [3, 128, 128] tensor in [-1, 1]
-    # sample.boxes  -> [20, 4] tensor in (cx, cy, w, h) format
-    # sample.labels -> [20] tensor of class IDs
-    # sample.valid_mask -> [20] bool tensor
-
-Notes
------
-- Requires an internet connection at data-loading time.
-- The VOC 2012 mirror at ``host.robots.ox.ac.uk`` is used.  If this
-  mirror is unavailable, set the ``VOC_MIRROR`` environment variable.
-- Images are resized with aspect-ratio-preserving padding (same as
-  ``YOLODataset``) to the target square size.
-- The 20 VOC classes are mapped to integer IDs 0–19 in the standard
-  order defined by the VOC challenge.
+    # Via HuggingFace datasets (alternative when VOC mirror is blocked)
+    from ilgan.data.streaming_voc import get_hf_voc_loaders
+    train_loader, val_loader = get_hf_voc_loaders(
+        image_size=128, batch_size=32, max_boxes=20
+    )
 """
 
 from __future__ import annotations
@@ -90,9 +87,8 @@ VOC_MIRROR: str = os.environ.get(
 """Base URL for VOC 2012 data.  Override with ``VOC_MIRROR`` env var."""
 
 VOC_ARCHIVE_URL: str = f"{VOC_MIRROR}/VOCtrainval_11-May-2012.tar"
-"""URL of the full VOC 2012 train+val archive (used for individual file extraction)."""
+"""URL of the full VOC 2012 train+val archive."""
 
-# VOC 2012 image set IDs (train/val splits)
 VOC_TRAIN_IDS_URL: str = (
     "https://raw.githubusercontent.com/akshaylakkur/GAN/main/"
     "ilgan/data/voc_splits/train_ids.txt"
@@ -101,14 +97,8 @@ VOC_VAL_IDS_URL: str = (
     "https://raw.githubusercontent.com/akshaylakkur/GAN/main/"
     "ilgan/data/voc_splits/val_ids.txt"
 )
-"""
-URLs for the train/val split ID lists.  These are tiny text files
-(~15KB each) listing the image stems for each split.
+"""Repo-hosted split ID files (tiny text files, ~15KB each)."""
 
-We host these in the repo itself to avoid parsing the VOC ImageSets
-from the tar archive on every run.  The files are generated once from
-the official VOC devkit and committed.
-"""
 
 # ──────────────────────────────────────────────────────────────────────────────
 # LRU Cache
@@ -127,21 +117,18 @@ class LRUCache:
         self._cache: OrderedDict[str, Sample] = OrderedDict()
 
     def get(self, key: str) -> Optional[Sample]:
-        """Return the cached value for *key*, or ``None`` if missing."""
         if key not in self._cache:
             return None
         self._cache.move_to_end(key)
         return self._cache[key]
 
     def put(self, key: str, value: Sample) -> None:
-        """Store *value* under *key*, evicting the oldest entry if at capacity."""
         self._cache[key] = value
         self._cache.move_to_end(key)
         if len(self._cache) > self.capacity:
             self._cache.popitem(last=False)
 
     def clear(self) -> None:
-        """Clear all cached entries."""
         self._cache.clear()
 
     @property
@@ -157,8 +144,7 @@ class LRUCache:
 def _fetch_url(url: str, timeout: float = 30.0) -> bytes:
     """Fetch a URL and return the raw bytes.
 
-    Uses ``urllib.request`` (stdlib) to avoid adding ``requests`` as a
-    dependency.  Raises ``RuntimeError`` on failure.
+    Uses ``urllib.request`` (stdlib).  Raises ``RuntimeError`` on failure.
     """
     import urllib.request
 
@@ -172,52 +158,31 @@ def _fetch_url(url: str, timeout: float = 30.0) -> bytes:
 def _fetch_voc_image(stem: str) -> Image.Image:
     """Fetch a single VOC image by stem and return a PIL Image.
 
-    Downloads the image from the VOC 2012 JPEGImages directory inside
-    the official tar archive.  We use the raw GitHub mirror for
-    individual files to avoid downloading the full tar.
-
-    The VOC archive is structured as::
-
-        VOCdevkit/VOC2012/JPEGImages/{stem}.jpg
-        VOCdevkit/VOC2012/Annotations/{stem}.xml
+    Tries direct HTTP first, then falls back to tar archive extraction.
     """
-    # Try direct HTTP access to individual image files.
-    # Some mirrors serve individual files; others require tar extraction.
-    # We try the direct URL first, then fall back to tar extraction.
     direct_url = f"{VOC_MIRROR}/JPEGImages/{stem}.jpg"
-
     try:
         data = _fetch_url(direct_url, timeout=10.0)
         return Image.open(io.BytesIO(data)).convert("RGB")
     except (RuntimeError, OSError):
         pass
-
-    # Fallback: extract from the full tar archive (slower, but reliable).
-    # We download the tar once and cache it in a temp file.
     return _extract_from_tar(f"VOCdevkit/VOC2012/JPEGImages/{stem}.jpg")
 
 
 def _fetch_voc_annotation(stem: str) -> str:
-    """Fetch a single VOC annotation XML by stem and return the text.
-
-    Same strategy as ``_fetch_voc_image``: try direct URL first, then
-    fall back to tar extraction.
-    """
+    """Fetch a single VOC annotation XML by stem and return the text."""
     direct_url = f"{VOC_MIRROR}/Annotations/{stem}.xml"
-
     try:
         data = _fetch_url(direct_url, timeout=10.0)
         return data.decode("utf-8")
     except (RuntimeError, OSError):
         pass
-
     return _extract_annotation_from_tar(stem)
 
 
 # ── Tar extraction fallback ──────────────────────────────────────────────
 
 _TAR_CACHE: Optional[tarfile.TarFile] = None
-"""Module-level cache for the opened VOC tar archive."""
 
 
 def _get_tar() -> tarfile.TarFile:
@@ -234,7 +199,6 @@ def _get_tar() -> tarfile.TarFile:
     elapsed = time.time() - t0
     print(f"[StreamingVOC] Downloaded {len(data) / 1024 / 1024:.1f} MB in {elapsed:.1f}s")
 
-    # Write to a temp file and open as tar
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".tar")
     tmp.write(data)
     tmp.flush()
@@ -243,7 +207,6 @@ def _get_tar() -> tarfile.TarFile:
 
 
 def _extract_from_tar(path_in_archive: str) -> Image.Image:
-    """Extract a file from the VOC tar archive and return as PIL Image."""
     tar = _get_tar()
     member = tar.getmember(path_in_archive)
     f = tar.extractfile(member)
@@ -253,7 +216,6 @@ def _extract_from_tar(path_in_archive: str) -> Image.Image:
 
 
 def _extract_annotation_from_tar(stem: str) -> str:
-    """Extract an annotation XML from the VOC tar archive."""
     tar = _get_tar()
     path = f"VOCdevkit/VOC2012/Annotations/{stem}.xml"
     member = tar.getmember(path)
@@ -271,24 +233,16 @@ def _extract_annotation_from_tar(stem: str) -> str:
 def _parse_voc_annotation(xml_text: str) -> Tuple[torch.Tensor, torch.Tensor]:
     """Parse a VOC annotation XML string into boxes and labels.
 
-    Parameters
-    ----------
-    xml_text : str
-        The XML content of a VOC annotation file.
-
     Returns
     -------
     boxes : torch.Tensor
-        Shape ``[N, 4]`` in ``(cx, cy, w, h)`` format, normalised to
-        ``[0, 1]`` relative to the image dimensions.
+        Shape ``[N, 4]`` in ``(cx, cy, w, h)`` format, normalised to ``[0, 1]``.
     labels : torch.Tensor
         Shape ``[N]``, integer class IDs (0–19).
     """
     import xml.etree.ElementTree as ET
 
     root = ET.fromstring(xml_text)
-
-    # Image dimensions
     size = root.find("size")
     img_w = int(size.find("width").text)
     img_h = int(size.find("height").text)
@@ -297,34 +251,25 @@ def _parse_voc_annotation(xml_text: str) -> Tuple[torch.Tensor, torch.Tensor]:
     labels_list: List[int] = []
 
     for obj in root.findall("object"):
-        # Skip difficult objects (optional)
         difficult = obj.find("difficult")
         if difficult is not None and difficult.text == "1":
             continue
 
         cls_name = obj.find("name").text
         if cls_name not in VOC_CLASS_TO_ID:
-            continue  # Skip unknown classes (shouldn't happen in VOC)
+            continue
 
         cls_id = VOC_CLASS_TO_ID[cls_name]
         bndbox = obj.find("bndbox")
 
-        xmin = float(bndbox.find("xmin").text)
-        ymin = float(bndbox.find("ymin").text)
-        xmax = float(bndbox.find("xmax").text)
-        ymax = float(bndbox.find("ymax").text)
+        xmin = max(0.0, float(bndbox.find("xmin").text))
+        ymin = max(0.0, float(bndbox.find("ymin").text))
+        xmax = min(float(img_w), float(bndbox.find("xmax").text))
+        ymax = min(float(img_h), float(bndbox.find("ymax").text))
 
-        # Clamp to image boundaries
-        xmin = max(0.0, xmin)
-        ymin = max(0.0, ymin)
-        xmax = min(float(img_w), xmax)
-        ymax = min(float(img_h), ymax)
-
-        # Skip degenerate boxes
         if xmax <= xmin or ymax <= ymin:
             continue
 
-        # Convert to YOLO format (cx, cy, w, h) normalised
         cx = (xmin + xmax) / 2.0 / img_w
         cy = (ymin + ymax) / 2.0 / img_h
         w = (xmax - xmin) / img_w
@@ -335,12 +280,11 @@ def _parse_voc_annotation(xml_text: str) -> Tuple[torch.Tensor, torch.Tensor]:
 
     boxes = torch.tensor(boxes_list, dtype=torch.float32).view(-1, 4)
     labels = torch.tensor(labels_list, dtype=torch.long)
-
     return boxes, labels
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Resize with padding (same as YOLODataset)
+# Resize with padding
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -348,17 +292,7 @@ def _resize_with_pad(
     image: Image.Image,
     target_size: int,
 ) -> Tuple[torch.Tensor, float, Tuple[int, int]]:
-    """Resize the longer side to *target_size*, pad to square, return tensor.
-
-    Returns
-    -------
-    tensor : torch.Tensor
-        Shape ``[3, target_size, target_size]``, values in ``[-1, 1]``.
-    scale_factor : float
-        Ratio by which the original image was scaled.
-    pad_amounts : tuple of (int, int)
-        ``(pad_left, pad_top)`` applied to the shorter sides.
-    """
+    """Resize the longer side to *target_size*, pad to square, return tensor."""
     orig_w, orig_h = image.size
     longer_side = max(orig_w, orig_h)
     scale_factor = target_size / longer_side
@@ -376,7 +310,6 @@ def _resize_with_pad(
     arr = np.asarray(square, dtype=np.float32).transpose((2, 0, 1))
     tensor = torch.from_numpy(arr) / 127.5 - 1.0
     tensor = tensor.clamp(-1.0, 1.0)
-
     return tensor, scale_factor, (pad_left, pad_top)
 
 
@@ -418,20 +351,20 @@ class StreamingVOCDataset(torch.utils.data.Dataset):
     on each ``__getitem__`` call.  An in-memory LRU cache avoids
     re-fetching recently accessed samples.
 
+    **No synthetic data is ever used.**  If the VOC mirror is unreachable,
+    a ``RuntimeError`` is raised.  Use ``get_hf_voc_loaders()`` for an
+    alternative real-data path via HuggingFace datasets.
+
     Parameters
     ----------
     split : str
         One of ``"train"`` or ``"val"``.
     image_size : int
-        Target square size in pixels (longer side resized to this).
+        Target square size in pixels.
     max_boxes : int
-        Maximum number of boxes per sample.  Excess boxes are truncated;
+        Maximum number of boxes per sample.
     cache_size : int
-        Maximum number of samples to keep in the in-memory LRU cache.
-        Default 256.  Set to 0 to disable caching.
-    seed : int
-        Seed for the train/val split shuffling (only used if split IDs
-        cannot be fetched from the repo).
+        Maximum samples in the in-memory LRU cache.  Set to 0 to disable.
     """
 
     def __init__(
@@ -440,14 +373,12 @@ class StreamingVOCDataset(torch.utils.data.Dataset):
         image_size: int = 128,
         max_boxes: int = 20,
         cache_size: int = 256,
-        seed: int = 42,
     ) -> None:
         super().__init__()
 
         self._image_size = image_size
         self._max_boxes = max_boxes
 
-        # Normalise split name
         split_lower = split.lower()
         if split_lower in ("val", "test", "valid"):
             self._split_name = "val"
@@ -462,16 +393,12 @@ class StreamingVOCDataset(torch.utils.data.Dataset):
         if not self._image_ids:
             raise RuntimeError(
                 f"No image IDs found for split '{self._split_name}'. "
-                f"Check network connectivity to {VOC_MIRROR}."
+                f"Check network connectivity to {VOC_MIRROR}. "
+                f"Set VOC_MIRROR env var to an alternative mirror, or use "
+                f"get_hf_voc_loaders() for HuggingFace-based streaming."
             )
 
-        # ── LRU cache ──────────────────────────────────────────────────
         self._cache = LRUCache(capacity=cache_size) if cache_size > 0 else None
-
-        # ── Pre-fetch the VOC tar on first access (background) ──────────
-        # The tar is downloaded lazily on the first cache miss that
-        # requires tar extraction.  We don't pre-fetch here to avoid
-        # blocking the constructor.
 
     # ── public properties ───────────────────────────────────────────────
 
@@ -503,9 +430,11 @@ class StreamingVOCDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx: int) -> Sample:
         """Fetch and process a single VOC sample.
 
-        If caching is enabled, checks the LRU cache first.  On a cache
-        miss, fetches the image and annotation from the VOC mirror,
-        processes them, caches the result, and returns it.
+        Raises
+        ------
+        RuntimeError
+            If the VOC mirror is unreachable and the image cannot be
+            fetched via any fallback mechanism.
         """
         stem = self._image_ids[idx]
 
@@ -519,8 +448,11 @@ class StreamingVOCDataset(torch.utils.data.Dataset):
         try:
             pil_image = _fetch_voc_image(stem)
         except (RuntimeError, OSError, FileNotFoundError) as e:
-            warnings.warn(f"Failed to fetch image {stem}: {e}. Returning blank sample.")
-            return self._make_blank_sample(stem)
+            raise RuntimeError(
+                f"Failed to fetch VOC image '{stem}' from {VOC_MIRROR}. "
+                f"Check network connectivity or set VOC_MIRROR env var. "
+                f"Original error: {e}"
+            )
 
         orig_w, orig_h = pil_image.size
 
@@ -529,7 +461,8 @@ class StreamingVOCDataset(torch.utils.data.Dataset):
             xml_text = _fetch_voc_annotation(stem)
             boxes, labels = _parse_voc_annotation(xml_text)
         except (RuntimeError, OSError, FileNotFoundError) as e:
-            warnings.warn(f"Failed to fetch annotation {stem}: {e}. Using empty labels.")
+            # If annotation fails, use empty labels (image-only sample)
+            warnings.warn(f"Failed to fetch annotation for {stem}: {e}. Using empty labels.")
             boxes = torch.zeros((0, 4), dtype=torch.float32)
             labels = torch.zeros(0, dtype=torch.long)
 
@@ -586,7 +519,6 @@ class StreamingVOCDataset(torch.utils.data.Dataset):
             },
         )
 
-        # ── Cache ───────────────────────────────────────────────────────
         if self._cache is not None:
             self._cache.put(stem, sample)
 
@@ -600,7 +532,6 @@ class StreamingVOCDataset(torch.utils.data.Dataset):
         Tries the repo-hosted split files first, then falls back to
         extracting from the VOC tar archive.
         """
-        # Try repo-hosted split files
         url = VOC_TRAIN_IDS_URL if split == "train" else VOC_VAL_IDS_URL
         try:
             data = _fetch_url(url, timeout=15.0)
@@ -611,7 +542,6 @@ class StreamingVOCDataset(torch.utils.data.Dataset):
         except (RuntimeError, OSError):
             pass
 
-        # Fallback: extract from the VOC tar archive
         warnings.warn(
             "Could not fetch split IDs from repo. "
             "Extracting from VOC tar archive (slower)..."
@@ -631,17 +561,6 @@ class StreamingVOCDataset(torch.utils.data.Dataset):
         ids = [line.strip() for line in text.splitlines() if line.strip()]
         return ids
 
-    def _make_blank_sample(self, stem: str) -> Sample:
-        """Create a blank sample (all zeros) for when fetching fails."""
-        return Sample(
-            image=torch.zeros(3, self._image_size, self._image_size),
-            boxes=torch.full((self._max_boxes, 4), fill_value=-1.0),
-            labels=torch.full((self._max_boxes,), fill_value=-1, dtype=torch.long),
-            valid_mask=torch.zeros(self._max_boxes, dtype=torch.bool),
-            image_path=f"voc2012/{self._split_name}/{stem}.jpg",
-            metadata={"split": self._split_name, "stem": stem, "blank": True},
-        )
-
     # ── representation ─────────────────────────────────────────────────
 
     def __repr__(self) -> str:
@@ -655,137 +574,8 @@ class StreamingVOCDataset(torch.utils.data.Dataset):
         )
 
 
-
 # ──────────────────────────────────────────────────────────────────────────────
-# SyntheticVOCDataset — generates random VOC-like data for testing
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-class SyntheticVOCDataset(torch.utils.data.Dataset):
-    """Generates random synthetic VOC-like data for testing the training
-    pipeline without requiring network access to the VOC mirror.
-
-    Each sample is a random noise image with randomly placed bounding boxes
-    and class labels.  This is useful for:
-
-    - Verifying the training pipeline runs end-to-end.
-    - Testing device support (MPS, CUDA, CPU).
-    - Profiling memory and speed without data loading bottlenecks.
-
-    Parameters
-    ----------
-    num_samples : int
-        Number of synthetic samples to generate.
-    image_size : int
-        Spatial size of generated images (square).
-    max_boxes : int
-        Maximum number of bounding boxes per sample.
-    num_classes : int
-        Number of object classes (default 20, matching VOC).
-    seed : int
-        Random seed for reproducibility.
-    """
-
-    def __init__(
-        self,
-        num_samples: int = 100,
-        image_size: int = 128,
-        max_boxes: int = 20,
-        num_classes: int = 20,
-        seed: int = 42,
-    ) -> None:
-        super().__init__()
-        self._num_samples = num_samples
-        self._image_size = image_size
-        self._max_boxes = max_boxes
-        self._num_classes = num_classes
-        self._seed = seed
-        self._rng = random.Random(seed)
-        self._np_rng = np.random.RandomState(seed)
-
-    @property
-    def image_size(self) -> int:
-        return self._image_size
-
-    @property
-    def split(self) -> str:
-        return "train"
-
-    @property
-    def max_boxes(self) -> int:
-        return self._max_boxes
-
-    @property
-    def class_names(self) -> List[str]:
-        return VOC_CLASSES[:self._num_classes]
-
-    @property
-    def num_classes(self) -> int:
-        return self._num_classes
-
-    def __len__(self) -> int:
-        return self._num_samples
-
-    def __getitem__(self, idx: int) -> Sample:
-        """Generate a random synthetic sample."""
-        # Random image in [-1, 1] (clamped to ensure valid range)
-        image = torch.randn(3, self._image_size, self._image_size) * 0.3
-        image = image.clamp(-1.0, 1.0)
-
-        # Random number of boxes (0 to max_boxes)
-        n_boxes = self._rng.randint(0, self._max_boxes)
-
-        if n_boxes == 0:
-            boxes = torch.zeros((0, 4), dtype=torch.float32)
-            labels = torch.zeros(0, dtype=torch.long)
-        else:
-            # Random boxes with reasonable sizes
-            cx = torch.rand(n_boxes)
-            cy = torch.rand(n_boxes)
-            w = torch.rand(n_boxes) * 0.3 + 0.05  # 0.05 to 0.35
-            h = torch.rand(n_boxes) * 0.3 + 0.05
-            boxes = torch.stack([cx, cy, w, h], dim=1)
-            labels = torch.randint(0, self._num_classes, (n_boxes,))
-
-        # Pad to max_boxes
-        if n_boxes < self._max_boxes:
-            pad_n = self._max_boxes - n_boxes
-            boxes = torch.cat([
-                boxes,
-                torch.full((pad_n, 4), fill_value=-1.0, dtype=torch.float32),
-            ], dim=0)
-            labels = torch.cat([
-                labels,
-                torch.full((pad_n,), fill_value=-1, dtype=torch.long),
-            ], dim=0)
-            valid_mask = torch.cat([
-                torch.ones(n_boxes, dtype=torch.bool),
-                torch.zeros(pad_n, dtype=torch.bool),
-            ], dim=0)
-        else:
-            valid_mask = torch.ones(self._max_boxes, dtype=torch.bool)
-
-        return Sample(
-            image=image,
-            boxes=boxes,
-            labels=labels,
-            valid_mask=valid_mask,
-            image_path=f"synthetic/{idx:06d}.png",
-            metadata={"split": "train", "stem": f"{idx:06d}", "synthetic": True},
-        )
-
-    def __repr__(self) -> str:
-        return (
-            f"SyntheticVOCDataset("
-            f"samples={self._num_samples}, "
-            f"size={self._image_size}, "
-            f"max_boxes={self._max_boxes}, "
-            f"classes={self._num_classes})"
-        )
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Factory: get_streaming_loaders
+# Factory: get_streaming_loaders (VOC mirror, hard-fail on unavailability)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -795,8 +585,6 @@ def get_streaming_loaders(
     max_boxes: int = 20,
     num_workers: int = 4,
     cache_size: int = 256,
-    force_synthetic: bool = False,
-    synthetic_samples: int = 100,
 ) -> Tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
     """Create train and validation DataLoaders using the streaming VOC dataset.
 
@@ -804,9 +592,9 @@ def get_streaming_loaders(
     ``ilgan.data.dataloader.get_train_val_loaders`` that uses
     ``StreamingVOCDataset`` instead of ``YOLODataset``.
 
-    If the VOC mirror is unreachable (e.g., no internet or firewall), the
-    function falls back to ``SyntheticVOCDataset`` which generates random
-    VOC-like data for testing purposes.
+    **No synthetic data is ever used.**  If the VOC mirror is unreachable,
+    a ``RuntimeError`` is raised.  Use ``get_hf_voc_loaders()`` for an
+    alternative real-data path via HuggingFace datasets.
 
     Parameters
     ----------
@@ -820,82 +608,42 @@ def get_streaming_loaders(
         Number of data loading workers.
     cache_size : int
         LRU cache size per dataset.
-    force_synthetic : bool
-        If True, always use synthetic data (for testing without network).
-    synthetic_samples : int
-        Number of synthetic samples to generate.
 
     Returns
     -------
     train_loader : DataLoader
     val_loader : DataLoader
+
+    Raises
+    ------
+    RuntimeError
+        If the VOC mirror is unreachable and no data can be loaded.
     """
     from ilgan.data.structures import Batch
 
     def _collate_fn(samples):
         return Batch.collate(samples, global_max_boxes=max_boxes)
 
-    if force_synthetic:
-        train_dataset = SyntheticVOCDataset(
-            num_samples=synthetic_samples,
-            image_size=image_size,
-            max_boxes=max_boxes,
-            num_classes=20,
-            seed=42,
-        )
-        val_dataset = SyntheticVOCDataset(
-            num_samples=max(10, synthetic_samples // 5),
-            image_size=image_size,
-            max_boxes=max_boxes,
-            num_classes=20,
-            seed=43,
-        )
-    else:
-        try:
-            train_dataset = StreamingVOCDataset(
-                split="train",
-                image_size=image_size,
-                max_boxes=max_boxes,
-                cache_size=cache_size,
-            )
-            val_dataset = StreamingVOCDataset(
-                split="val",
-                image_size=image_size,
-                max_boxes=max_boxes,
-                cache_size=cache_size,
-            )
-        except (RuntimeError, OSError, ConnectionError) as e:
-            import warnings
-            warnings.warn(
-                f"Failed to connect to VOC mirror: {e}. "
-                f"Falling back to synthetic data for testing."
-            )
-            train_dataset = SyntheticVOCDataset(
-                num_samples=synthetic_samples,
-                image_size=image_size,
-                max_boxes=max_boxes,
-                num_classes=20,
-                seed=42,
-            )
-            val_dataset = SyntheticVOCDataset(
-                num_samples=max(10, synthetic_samples // 5),
-                image_size=image_size,
-                max_boxes=max_boxes,
-                num_classes=20,
-                seed=43,
-            )
+    train_dataset = StreamingVOCDataset(
+        split="train",
+        image_size=image_size,
+        max_boxes=max_boxes,
+        cache_size=cache_size,
+    )
 
-    from ilgan.data.structures import Batch
-
-    def _collate_fn(samples):
-        return Batch.collate(samples, global_max_boxes=max_boxes)
+    val_dataset = StreamingVOCDataset(
+        split="val",
+        image_size=image_size,
+        max_boxes=max_boxes,
+        cache_size=cache_size,
+    )
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=False,  # MPS doesn't support pin_memory
+        pin_memory=False,
         drop_last=True,
         collate_fn=_collate_fn,
     )
@@ -914,6 +662,242 @@ def get_streaming_loaders(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# HuggingFace datasets-based streaming (alternative data path)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def get_hf_voc_loaders(
+    image_size: int = 128,
+    batch_size: int = 16,
+    max_boxes: int = 20,
+    num_workers: int = 4,
+) -> Tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
+    """Create train/val DataLoaders using HuggingFace ``datasets`` to stream
+    VOC 2012 data.
+
+    This is an alternative to ``get_streaming_loaders`` that uses the
+    HuggingFace hub as the data source instead of the official VOC mirror.
+    It requires the ``datasets`` package:
+
+        pip install datasets
+
+    The HuggingFace path is useful when:
+    - The official VOC mirror (host.robots.ox.ac.uk) is blocked/firewalled.
+    - You want faster downloads via HF's CDN.
+    - You're running on a cloud instance with limited egress to Oxford.
+
+    **No synthetic data is ever used.**  If the HuggingFace hub is
+    unreachable, a ``RuntimeError`` is raised.
+
+    Parameters
+    ----------
+    image_size : int
+        Target image size (square).
+    batch_size : int
+        Batch size.
+    max_boxes : int
+        Maximum boxes per sample.
+    num_workers : int
+        Number of data loading workers.
+
+    Returns
+    -------
+    train_loader : DataLoader
+    val_loader : DataLoader
+
+    Raises
+    ------
+    ImportError
+        If the ``datasets`` package is not installed.
+    RuntimeError
+        If the HuggingFace hub is unreachable.
+    """
+    try:
+        import datasets
+    except ImportError:
+        raise ImportError(
+            "get_hf_voc_loaders requires the 'datasets' package. "
+            "Install it with: pip install datasets"
+        )
+
+    from ilgan.data.structures import Batch
+
+    # ── Load VOC 2012 from HuggingFace hub ──────────────────────────────
+    # The VOC 2012 dataset is available on the HF hub under multiple orgs.
+    # We use the official torchvision-compatible dataset.
+    try:
+        hf_dataset = datasets.load_dataset(
+            "ilhar/vis-datasets-pascal-voc-2012",
+            split="train",
+            streaming=True,
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to load VOC 2012 from HuggingFace hub: {e}. "
+            f"Check network connectivity or use get_streaming_loaders() "
+            f"to stream from the official VOC mirror instead."
+        )
+
+    # ── Split into train/val ────────────────────────────────────────────
+    # The HF dataset doesn't have built-in splits, so we use the same
+    # split IDs as the streaming dataset.
+    import urllib.request
+
+    def _fetch_ids(url: str) -> List[str]:
+        try:
+            data = urllib.request.urlopen(url, timeout=15).read()
+            return [line.strip() for line in data.decode("utf-8").splitlines()
+                    if line.strip() and not line.startswith("#")]
+        except Exception as e:
+            raise RuntimeError(f"Failed to fetch split IDs: {e}")
+
+    train_ids = set(_fetch_ids(VOC_TRAIN_IDS_URL))
+    val_ids = set(_fetch_ids(VOC_VAL_IDS_URL))
+
+    # ── Filter dataset by split ─────────────────────────────────────────
+    def _is_train(example):
+        stem = example["image_id"] if "image_id" in example else example["id"]
+        return stem in train_ids
+
+    def _is_val(example):
+        stem = example["image_id"] if "image_id" in example else example["id"]
+        return stem in val_ids
+
+    train_stream = hf_dataset.filter(_is_train)
+    val_stream = hf_dataset.filter(_is_val)
+
+    # ── Wrap in PyTorch Dataset ─────────────────────────────────────────
+    class _HFVOCDataset(torch.utils.data.IterableDataset):
+        """Wrapper that converts HF VOC examples to ILGAN Samples."""
+
+        def __init__(self, hf_stream, split_name: str):
+            self._stream = hf_stream
+            self._split_name = split_name
+
+        def __iter__(self):
+            for example in self._stream:
+                yield self._example_to_sample(example)
+
+        def _example_to_sample(self, example) -> Sample:
+            # Convert HF example to ILGAN Sample
+            # HF dataset returns PIL images and VOC annotations
+            pil_image = example["image"]
+            if not isinstance(pil_image, Image.Image):
+                pil_image = Image.open(io.BytesIO(pil_image["bytes"])).convert("RGB")
+
+            orig_w, orig_h = pil_image.size
+
+            # Parse objects
+            objects = example.get("objects", example.get("annotation", {}).get("object", []))
+            boxes_list = []
+            labels_list = []
+
+            for obj in objects:
+                cls_name = obj["name"] if isinstance(obj, dict) else obj.find("name").text
+                if cls_name not in VOC_CLASS_TO_ID:
+                    continue
+
+                cls_id = VOC_CLASS_TO_ID[cls_name]
+
+                if isinstance(obj, dict):
+                    bbox = obj["bbox"]
+                    # HF bbox format varies; handle both VOC and YOLO formats
+                    if "xmin" in bbox:
+                        xmin = max(0.0, float(bbox["xmin"]))
+                        ymin = max(0.0, float(bbox["ymin"]))
+                        xmax = min(float(orig_w), float(bbox["xmax"]))
+                        ymax = min(float(orig_h), float(bbox["ymax"]))
+                    else:
+                        # COCO/YOLO format: [x, y, w, h]
+                        xmin = max(0.0, float(bbox[0]))
+                        ymin = max(0.0, float(bbox[1]))
+                        xmax = min(float(orig_w), float(bbox[0]) + float(bbox[2]))
+                        ymax = min(float(orig_h), float(bbox[1]) + float(bbox[3]))
+                else:
+                    # XML element
+                    bndbox = obj.find("bndbox")
+                    xmin = max(0.0, float(bndbox.find("xmin").text))
+                    ymin = max(0.0, float(bndbox.find("ymin").text))
+                    xmax = min(float(orig_w), float(bndbox.find("xmax").text))
+                    ymax = min(float(orig_h), float(bndbox.find("ymax").text))
+
+                if xmax <= xmin or ymax <= ymin:
+                    continue
+
+                cx = (xmin + xmax) / 2.0 / orig_w
+                cy = (ymin + ymax) / 2.0 / orig_h
+                w = (xmax - xmin) / orig_w
+                h = (ymax - ymin) / orig_h
+
+                boxes_list.extend([cx, cy, w, h])
+                labels_list.append(cls_id)
+
+            boxes = torch.tensor(boxes_list, dtype=torch.float32).view(-1, 4) if boxes_list else torch.zeros((0, 4))
+            labels = torch.tensor(labels_list, dtype=torch.long) if labels_list else torch.zeros(0, dtype=torch.long)
+
+            # Resize
+            image_tensor, scale_factor, (pad_left, pad_top) = _resize_with_pad(
+                pil_image, image_size
+            )
+
+            if boxes.size(0) > 0:
+                boxes = _rescale_boxes(
+                    boxes, orig_w, orig_h, scale_factor, pad_left, pad_top, image_size
+                )
+
+            # Pad to max_boxes
+            n = boxes.size(0)
+            if n > max_boxes:
+                boxes = boxes[:max_boxes]
+                labels = labels[:max_boxes]
+                n = max_boxes
+
+            if n < max_boxes:
+                pad_n = max_boxes - n
+                boxes = torch.cat([boxes, torch.full((pad_n, 4), fill_value=-1.0)], dim=0)
+                labels = torch.cat([labels, torch.full((pad_n,), fill_value=-1, dtype=torch.long)], dim=0)
+                valid_mask = torch.cat([torch.ones(n, dtype=torch.bool), torch.zeros(pad_n, dtype=torch.bool)], dim=0)
+            else:
+                valid_mask = torch.ones(max_boxes, dtype=torch.bool)
+
+            stem = example.get("image_id", example.get("id", "unknown"))
+            return Sample(
+                image=image_tensor,
+                boxes=boxes,
+                labels=labels,
+                valid_mask=valid_mask,
+                image_path=f"voc2012_hf/{self._split_name}/{stem}.jpg",
+                metadata={"split": self._split_name, "stem": stem, "source": "huggingface"},
+            )
+
+    def _collate_fn(samples):
+        return Batch.collate(list(samples), global_max_boxes=max_boxes)
+
+    train_dataset = _HFVOCDataset(train_stream, "train")
+    val_dataset = _HFVOCDataset(val_stream, "val")
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        num_workers=0,  # IterableDataset doesn't support multi-worker
+        pin_memory=False,
+        drop_last=True,
+        collate_fn=_collate_fn,
+    )
+
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        num_workers=0,
+        pin_memory=False,
+        drop_last=False,
+        collate_fn=_collate_fn,
+    )
+
+    return train_loader, val_loader
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Generate split ID files (run once, commit to repo)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -923,17 +907,8 @@ def generate_split_files(output_dir: str = "ilgan/data/voc_splits") -> None:
 
     Run this once on a machine that has the full VOC 2012 dataset
     downloaded, then commit the generated text files to the repo.
-    The streaming dataset will use these files instead of extracting
-    from the tar archive.
-
-    Usage::
-
-        python -c "from ilgan.data.streaming_voc import generate_split_files; generate_split_files()"
     """
-    import xml.etree.ElementTree as ET
-
     os.makedirs(output_dir, exist_ok=True)
-
     voc_root = os.environ.get("VOC_ROOT", "./VOCdevkit/VOC2012")
 
     for split_name, output_name in [("train", "train_ids.txt"), ("val", "val_ids.txt")]:
@@ -949,7 +924,6 @@ def generate_split_files(output_dir: str = "ilgan/data/voc_splits") -> None:
         with open(out_path, "w") as f:
             for img_id in ids:
                 f.write(f"{img_id}\n")
-
         print(f"Wrote {len(ids)} IDs to {out_path}")
 
     print("Done. Commit the generated files to the repo.")
@@ -961,8 +935,8 @@ def generate_split_files(output_dir: str = "ilgan/data/voc_splits") -> None:
 
 __all__ = [
     "StreamingVOCDataset",
-    "SyntheticVOCDataset",
     "get_streaming_loaders",
+    "get_hf_voc_loaders",
     "VOC_CLASSES",
     "VOC_CLASS_TO_ID",
     "generate_split_files",

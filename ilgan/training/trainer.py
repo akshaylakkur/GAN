@@ -71,7 +71,7 @@ from torch.amp import GradScaler
 
 from ilgan.data.dataloader import GANDataloader, get_train_val_loaders
 from ilgan.utils.device import get_device, get_device_info, supports_amp, get_amp_device_type
-from ilgan.data.streaming_voc import get_streaming_loaders
+from ilgan.data.streaming_voc import get_streaming_loaders, get_hf_voc_loaders
 from ilgan.data.structures import Batch
 from ilgan.losses import LossAggregator
 from ilgan.losses.consistency import BoxFeatureEncoder, ImageFeatureEncoder
@@ -430,13 +430,37 @@ class ILGANTrainer:
 
         if use_streaming:
             self.logger.info(f"  Using streaming dataset: {streaming_dataset}")
-            train_loader, val_loader = get_streaming_loaders(
-                image_size=self.image_size,
-                batch_size=self.batch_size,
-                max_boxes=self.max_boxes,
-                num_workers=self.num_workers,
-                cache_size=getattr(self.config.data, "streaming_cache_size", 256),
-            )
+            # Try the official VOC mirror first. If it fails, fall back to
+            # HuggingFace datasets (real data only — no synthetic ever).
+            try:
+                train_loader, val_loader = get_streaming_loaders(
+                    image_size=self.image_size,
+                    batch_size=self.batch_size,
+                    max_boxes=self.max_boxes,
+                    num_workers=self.num_workers,
+                    cache_size=getattr(self.config.data, "streaming_cache_size", 256),
+                )
+                self.logger.info("  Using VOC mirror (host.robots.ox.ac.uk)")
+            except (RuntimeError, OSError, ConnectionError) as e:
+                self.logger.warning(
+                    f"VOC mirror unreachable: {e}. "
+                    f"Falling back to HuggingFace datasets..."
+                )
+                try:
+                    train_loader, val_loader = get_hf_voc_loaders(
+                        image_size=self.image_size,
+                        batch_size=self.batch_size,
+                        max_boxes=self.max_boxes,
+                        num_workers=0,  # IterableDataset doesn't support multi-worker
+                    )
+                    self.logger.info("  Using HuggingFace datasets (huggingface.co)")
+                except (ImportError, RuntimeError) as hf_e:
+                    raise RuntimeError(
+                        f"Cannot load VOC data: VOC mirror failed ({e}) "
+                        f"and HuggingFace fallback also failed ({hf_e}). "
+                        f"Check network connectivity or install 'datasets' package. "
+                        f"No synthetic data will ever be used."
+                    )
         else:
             train_loader, val_loader = get_train_val_loaders(
                 root_dir=self.data_root,
