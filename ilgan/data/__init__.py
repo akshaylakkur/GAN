@@ -10,6 +10,12 @@ from ilgan.data.dataset import (
     YOLODataset,
     resize_with_pad,
 )
+from ilgan.data.streaming_voc import (
+    StreamingVOCDataset,
+    get_streaming_loaders,
+    VOC_CLASSES,
+    VOC_CLASS_TO_ID,
+)
 from ilgan.data.augmentation import (
     Augmentation,
     RandomHorizontalFlip,
@@ -33,6 +39,11 @@ __all__ = [
     # Dataset
     "YOLODataset",
     "resize_with_pad",
+    # Streaming VOC
+    "StreamingVOCDataset",
+    "get_streaming_loaders",
+    "VOC_CLASSES",
+    "VOC_CLASS_TO_ID",
     # Augmentation
     "Augmentation",
     "RandomHorizontalFlip",

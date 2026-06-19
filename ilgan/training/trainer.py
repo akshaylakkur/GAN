@@ -70,6 +70,7 @@ import torch.nn as nn
 from torch.cuda.amp import GradScaler
 
 from ilgan.data.dataloader import GANDataloader, get_train_val_loaders
+from ilgan.data.streaming_voc import get_streaming_loaders
 from ilgan.data.structures import Batch
 from ilgan.losses import LossAggregator
 from ilgan.losses.consistency import BoxFeatureEncoder, ImageFeatureEncoder
@@ -423,17 +424,33 @@ class ILGANTrainer:
 
         # ── 1. Create dataloaders ─────────────────────────────────────────
         self.logger.info("Creating dataloaders...")
-        train_loader, val_loader = get_train_val_loaders(
-            root_dir=self.data_root,
-            image_size=self.image_size,
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            val_split=0.2,
-            augment=True,
-            global_max_boxes=self.max_boxes,
-            train_max_boxes=self.max_boxes,
-            val_max_boxes=self.max_boxes,
-        )
+
+        # Check if streaming mode is enabled (for cloud training without local data)
+        use_streaming = getattr(self.config.data, "use_streaming", False)
+        streaming_dataset = getattr(self.config.data, "streaming_dataset", "voc")
+
+        if use_streaming:
+            self.logger.info(f"  Using streaming dataset: {streaming_dataset}")
+            train_loader, val_loader = get_streaming_loaders(
+                image_size=self.image_size,
+                batch_size=self.batch_size,
+                max_boxes=self.max_boxes,
+                num_workers=self.num_workers,
+                cache_size=getattr(self.config.data, "streaming_cache_size", 256),
+            )
+        else:
+            train_loader, val_loader = get_train_val_loaders(
+                root_dir=self.data_root,
+                image_size=self.image_size,
+                batch_size=self.batch_size,
+                num_workers=self.num_workers,
+                val_split=0.2,
+                augment=True,
+                global_max_boxes=self.max_boxes,
+                train_max_boxes=self.max_boxes,
+                val_max_boxes=self.max_boxes,
+            )
+
         self.logger.info(
             f"  Train loader: {len(train_loader.dataset)} samples, "
             f"{len(train_loader)} batches"
