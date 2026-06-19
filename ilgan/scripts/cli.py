@@ -449,7 +449,30 @@ def cli() -> None:
     show_default=True,
     help=(
         "Learning rate for both Adam optimizers (generator and "
-        "discriminator).  Default: 0.0002."
+        "discriminator).  Overridden by --generator-lr and "
+        "--discriminator-lr if provided.  Default: 0.0002."
+    ),
+)
+@click.option(
+    "--generator-lr",
+    type=click.FloatRange(min=1e-8, max=1.0),
+    default=None,
+    help=(
+        "Separate learning rate for the generator only.  "
+        "If set, overrides --lr for the generator.  "
+        "Use with --discriminator-lr for asymmetric rates.  "
+        "Default: same as --lr."
+    ),
+)
+@click.option(
+    "--discriminator-lr",
+    type=click.FloatRange(min=1e-8, max=1.0),
+    default=None,
+    help=(
+        "Separate learning rate for the discriminator only.  "
+        "If set, overrides --lr for the discriminator.  "
+        "Use with --generator-lr for asymmetric rates.  "
+        "Default: same as --lr."
     ),
 )
 @click.option(
@@ -775,6 +798,8 @@ def train(
     gp_weight: Optional[float],
     beta1: Optional[float],
     beta2: Optional[float],
+    generator_lr: Optional[float],
+    discriminator_lr: Optional[float],
     no_mixed_precision: bool,
     no_grad_checkpoint: bool,
 ) -> None:
@@ -922,6 +947,8 @@ def train(
         "gp_weight": ("loss.gp_weight", gp_weight),
         "beta1": ("training.beta1", beta1),
         "beta2": ("training.beta2", beta2),
+        "generator_lr": ("training.generator_lr", generator_lr),
+        "discriminator_lr": ("training.discriminator_lr", discriminator_lr),
     }
 
     for param_name, (config_key, value) in param_to_config_key.items():

@@ -182,14 +182,19 @@ def build_optimizers(
 
     # ── Extract hyperparameters from config ─────────────────────────────
     base_lr: float = float(config.training.learning_rate)
+    # If separate G/D learning rates are provided, use them; otherwise
+    # both default to the base learning rate
+    g_lr: float = float(getattr(config.training, "generator_lr", base_lr))
+    d_lr: float = float(getattr(config.training, "discriminator_lr", base_lr))
     beta1: float = float(config.training.beta1)
     beta2: float = float(config.training.beta2)
 
     # Validate
-    if base_lr <= 0.0:
-        raise ValueError(
-            f"Learning rate must be positive, got {base_lr}."
-        )
+    for lr_val, name in [(g_lr, "generator_lr"), (d_lr, "discriminator_lr"), (base_lr, "learning_rate")]:
+        if lr_val <= 0.0:
+            raise ValueError(
+                f"{name} must be positive, got {lr_val}."
+            )
     if not (0.0 <= beta1 < 1.0):
         raise ValueError(
             f"beta1 must be in [0.0, 1.0), got {beta1}."
@@ -203,7 +208,7 @@ def build_optimizers(
     encoder_lr_factor: float = getattr(
         config.training, "encoder_lr_factor", _DEFAULT_ENCODER_LR_FACTOR
     )
-    encoder_lr: float = base_lr * encoder_lr_factor
+    encoder_lr: float = g_lr * encoder_lr_factor  # encoders follow G's LR
 
     # ── Build generator parameter groups ────────────────────────────────
     # Group 1: generator parameters (base LR)
@@ -219,7 +224,7 @@ def build_optimizers(
         [
             {
                 "params": gen_params,
-                "lr": base_lr,
+                "lr": g_lr,
                 "betas": (beta1, beta2),
                 "name": "generator",
             },
@@ -236,7 +241,7 @@ def build_optimizers(
                 "name": "box_encoder",
             },
         ],
-        lr=base_lr,  # default LR for any params not in a group (shouldn't happen)
+        lr=g_lr,
         betas=(beta1, beta2),
     )
 
@@ -245,7 +250,7 @@ def build_optimizers(
 
     d_optimizer = Adam(
         d_params,
-        lr=base_lr,
+        lr=d_lr,
         betas=(beta1, beta2),
     )
 
