@@ -649,14 +649,17 @@ def confidence_loss(
                                                   dtype=confidences.dtype)}
 
     # ── Compute binary cross-entropy ─────────────────────────────────────
-    # F.binary_cross_entropy expects values in [0, 1].  We clamp to avoid
-    # log(0) numerical issues.
-    confidences_clamped = confidences.clamp(min=1e-7, max=1.0 - 1e-7)
+    # F.binary_cross_entropy is unsafe under AMP autocast (it uses raw
+    # probabilities, not logits).  We disable autocast for this call.
+    with torch.cuda.amp.autocast(enabled=False):
+        # F.binary_cross_entropy expects values in [0, 1].  We clamp to avoid
+        # log(0) numerical issues.
+        confidences_clamped = confidences.clamp(min=1e-7, max=1.0 - 1e-7)
 
-    # Use reduction='none' so we can manually handle masking
-    per_element_loss = F.binary_cross_entropy(
-        confidences_clamped, target_confidence, reduction="none"
-    )  # [B, N]
+        # Use reduction='none' so we can manually handle masking
+        per_element_loss = F.binary_cross_entropy(
+            confidences_clamped, target_confidence, reduction="none"
+        )  # [B, N]
 
     # Average over ALL entries (both valid and invalid), because the model
     # must learn to assign low confidence to padded positions.
