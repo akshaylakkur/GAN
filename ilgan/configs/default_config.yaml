@@ -1,0 +1,111 @@
+# ──────────────────────────────────────────────────────────────────────
+# ILGAN — Default Configuration
+# One-shot Image and Bounding Box Generation via Generative Adversarial Networks
+# ──────────────────────────────────────────────────────────────────────
+
+data:
+  image_size: 128              # Spatial size of training images (pixels, square)
+  batch_size: 16               # Number of samples per batch
+  num_workers: 4               # Data loading workers (CPU threads)
+  augment_prob: 0.5            # Probability of applying stochastic augmentations
+  yolo_format: true            # Whether label files are in YOLO format
+
+model:
+  latent_dim: 256              # Dimensionality of the latent noise vector z
+  gen_base_channels: 64        # Base channel count for the generator (doubles per block)
+  disc_base_channels: 64       # Base channel count for the discriminator
+  num_attention_heads: 8       # Number of self-attention heads in attention blocks
+  max_boxes: 20                # Maximum number of bounding boxes predicted per image
+  num_classes: 80              # Number of object classes (COCO standard)
+
+loss:
+  adv_weight: 1.0              # Weight for the adversarial (GAN) loss term
+  box_weight: 5.0              # Weight for the bounding box regression loss term
+  class_weight: 1.0            # Weight for the class cross-entropy loss
+  confidence_weight: 1.0       # Weight for the confidence (objectness) BCE loss
+  diversity_weight: 0.1        # Weight for the feature diversity / collapse penalty
+  consistency_weight: 0.5      # Weight for the latent-image-box consistency constraint
+  entropy_weight: 0.1          # Weight for the attention entropy loss (collapse prevention)
+  repulsion_weight: 1.0        # Weight for the slot repulsion loss (box collapse prevention)
+  feature_diversity_weight: 0.1 # Weight for the feature diversity loss (image collapse prevention)
+  latent_diversity_weight: 0.01 # Weight for the latent diversity loss (mode separation)
+  spectral_reg_weight: 0.001   # Weight for the spectral regularization penalty
+  gp_weight: 10.0              # Weight for the gradient penalty (WGAN-GP)
+  w_global: 0.5                # Weight for the global discriminator score vs local score
+  repulsion_threshold: 0.2     # Minimum normalised distance between slot centres of mass
+  noise_schedule_initial: 0.1  # Initial noise standard deviation for latent noise injection
+  noise_schedule_final: 0.001  # Final (minimum) noise standard deviation after annealing
+
+training:
+  epochs: 500                  # Total number of training epochs
+  learning_rate: 0.0002        # Learning rate for Adam optimizers
+  beta1: 0.0                   # Adam beta1 (set to 0.0 for WGAN-style training)
+  beta2: 0.9                   # Adam beta2
+  n_critic: 5                  # Number of discriminator updates per generator update
+  gradient_accumulation_steps: 1  # Accumulate gradients over N steps (effective batch scaling)
+  use_mixed_precision: true    # Enable AMP (Automatic Mixed Precision) training
+  grad_checkpoint: true        # Enable gradient checkpointing to reduce VRAM
+  clip_grad_norm: 1.0          # Max norm for gradient clipping
+  adaptive_lr: false           # Enable adaptive learning rate scheduling
+  gradient_balance: true       # Enable gradient balancing between image and box pathways
+  representation_anchor_frequency: 500  # Steps between representation anchor updates
+  representation_anchor_weight: 0.01    # Weight for representation anchor loss term
+  noise_schedule:
+    initial_noise_std: 0.1     # Initial noise std for latent injection (overrides loss.noise_schedule_initial)
+    min_noise_std: 0.001       # Minimum noise std after annealing
+    warmup_steps: 1000         # Steps to hold noise at initial value before annealing
+    total_steps: null          # Total training steps (null = auto-compute from epochs/batch_size)
+
+logging:
+  log_interval: 10             # Log metrics every N global steps
+  save_interval: 50            # Save model checkpoint every N epochs
+  eval_interval: 100           # Run evaluation loop every N epochs
+  use_wandb: false             # Enable Weights & Biases remote logging
+
+metrics:
+  fid_sample_size: 5000        # Number of samples for FID computation (0 = use all available)
+  map_iou_threshold: 0.5       # IoU threshold for mAP computation
+  eval_sample_size: 1000       # Number of samples to use during evaluation loop
+  compute_fid: true            # Whether to compute FID during evaluation
+  compute_is: true             # Whether to compute Inception Score during evaluation
+  compute_map: true            # Whether to compute mAP during evaluation
+  num_fid_splits: 10           # Number of splits for Inception Score computation
+
+augmentation:
+  use_mosaic: true             # Enable YOLOv4-style Mosaic augmentation
+  use_mixup: true              # Enable MixUp augmentation
+  mosaic_prob: 0.5             # Probability of applying Mosaic to each group of 4 samples
+  mixup_prob: 0.5              # Probability of applying MixUp to each pair of samples
+  mixup_alpha: 0.5             # Beta distribution alpha for MixUp
+  random_erasing_prob: 0.5     # Probability of applying Random Erasing to each sample
+  random_erasing_scale: [0.02, 0.2]  # Scale range for erased regions (fraction of image area)
+  random_erasing_aspect: [0.3, 3.0]  # Aspect ratio range for erased regions
+  random_erasing_fill: "random"      # Fill mode for erased regions: constant, random, mean
+  random_erasing_max: 1        # Maximum number of erased rectangles per image
+  hflip_prob: 0.5              # Horizontal flip probability
+  color_jitter_prob: 0.8       # Colour jitter probability
+  color_jitter_brightness: 0.1 # Brightness jitter strength
+  color_jitter_contrast: 0.1   # Contrast jitter strength
+  color_jitter_saturation: 0.1 # Saturation jitter strength
+  color_jitter_hue: 0.05       # Hue jitter strength
+  affine_prob: 0.5             # Affine transform probability
+  affine_degrees: 5.0          # Max rotation degrees for affine
+  affine_translate: 0.05       # Max translation fraction for affine
+  affine_scale: [0.9, 1.1]     # Scale range for affine
+  cutout_prob: 0.5             # Cutout probability
+  cutout_max_holes: 3          # Maximum number of cutout holes
+  cutout_max_size: 0.1         # Maximum cutout hole size as fraction of image
+
+profiling:
+  profile_memory: false        # Enable GPU memory profiling during training
+  log_gradients: false         # Log gradient norms and statistics per step
+  detect_anomalies: false      # Enable PyTorch anomaly detection (slower, use for debugging)
+  log_spectral_norms: false    # Log spectral norms of spectrally-normalized layers
+  log_parameter_stats: false   # Log parameter mean/std/min/max per module
+  profile_frequency: 100       # Steps between memory/profile logging (when enabled)
+  track_ema_ratio: true        # Track and log the EMA gradient norm ratio
+
+paths:
+  data_root: "./data"          # Root directory for datasets
+  checkpoint_dir: "./checkpoints"  # Directory for saving model snapshots
+  log_dir: "./logs"            # Directory for log files
