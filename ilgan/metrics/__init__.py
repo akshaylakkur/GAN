@@ -3,16 +3,21 @@ ILGAN metrics — image quality assessment, bounding box evaluation, and
 joint quality tracking for the one-shot image + bounding box generation
 pipeline.
 
-The ``ilgan.metrics`` package provides three categories of evaluation tools:
+The ``ilgan.metrics`` package provides four categories of evaluation tools:
 
 1. **Image metrics** (:mod:`ilgan.metrics.image_metrics`) — FID, Inception
    Score, and basic image statistics (mean pixel, gradient magnitude,
    colour histogram entropy).
 
-2. **Box metrics** (:mod:`ilgan.metrics.box_metrics`) — mAP, GIoU, box
+2. **Advanced image metrics** (:mod:`ilgan.metrics.advanced_image_metrics`) —
+   Precision & Recall (Kynkäänniemi et al., 2019), Density & Coverage
+   (Naeem et al., 2020), LPIPS (Zhang et al., 2018), and sFID (spatial
+   FID using segmentation features).
+
+3. **Box metrics** (:mod:`ilgan.metrics.box_metrics`) — mAP, GIoU, box
    statistics (confidence, size, spatial diversity), and detection accuracy.
 
-3. **Joint metrics** (:mod:`ilgan.metrics.joint_metrics`) — A heuristic
+4. **Joint metrics** (:mod:`ilgan.metrics.joint_metrics`) — A heuristic
    joint quality score combining FID, mAP, and Inception Score, a stateful
    :class:`MetricsTracker` for accumulating metrics across batches, and a
    :func:`format_metrics` utility for console logging.
@@ -37,6 +42,13 @@ from ilgan.metrics.image_metrics import (
     InceptionScoreCalculator,
     clear_model_cache,
     compute_image_statistics,
+)
+from ilgan.metrics.advanced_image_metrics import (
+    PrecisionRecallCalculator,
+    DensityCoverageCalculator,
+    LPIPSCalculator,
+    SpatialFIDCalculator,
+    clear_advanced_model_cache,
 )
 from ilgan.metrics.box_metrics import (
     compute_map,
@@ -209,6 +221,12 @@ __all__ = [
     "InceptionScoreCalculator",
     "compute_image_statistics",
     "clear_model_cache",
+    # Advanced image metrics
+    "PrecisionRecallCalculator",
+    "DensityCoverageCalculator",
+    "LPIPSCalculator",
+    "SpatialFIDCalculator",
+    "clear_advanced_model_cache",
     # Box metrics
     "compute_map",
     "compute_giou",
