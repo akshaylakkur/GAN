@@ -553,6 +553,10 @@ def train_epoch(
             global_step % n_critic == 0
         )
 
+        # Initialise anchor_loss here so it always exists (may be None
+        # on non-generator-update steps, preventing UnboundLocalError).
+        anchor_loss: Optional[torch.Tensor] = None
+
         if should_update_generator:
             # Re-run generator forward for the generator loss computation.
             # We need to re-run because the discriminator backward may have

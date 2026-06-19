@@ -448,13 +448,14 @@ class RandomAffine(Augmentation):
 
         # ── transform boxes ─────────────────────────────────────────────
         if boxes.size(0) > 0 and valid_mask.any():
-            transformed_boxes = self._transform_boxes(
+            transformed_boxes, transformed_valid_mask = self._transform_boxes(
                 boxes, valid_mask, angle_rad, s, tx, ty,
             )
         else:
             transformed_boxes = boxes.clone()
+            transformed_valid_mask = valid_mask.clone()
 
-        return warped, transformed_boxes, labels, valid_mask
+        return warped, transformed_boxes, labels, transformed_valid_mask
 
     @staticmethod
     def _transform_boxes(
@@ -464,7 +465,7 @@ class RandomAffine(Augmentation):
         scale: float,
         tx: float,
         ty: float,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Apply the forward affine transform to YOLO boxes.
 
         All coordinates are in normalised ``[0, 1]`` space.  The forward
@@ -487,16 +488,19 @@ class RandomAffine(Augmentation):
 
         Returns
         -------
-        torch.Tensor
+        new_boxes : torch.Tensor
             Transformed boxes, same shape, clamped to ``[0, 1]``.
             Degenerate boxes (flipped entirely out of view) are set to
             ``-1.0``.
+        new_valid_mask : torch.Tensor
+            Updated validity mask — degenerate boxes are set to ``False``.
         """
         cos_a = math.cos(angle_rad)
         sin_a = math.sin(angle_rad)
         s = scale
 
         new_boxes = boxes.clone()
+        new_valid_mask = valid_mask.clone()
         valid_indices = torch.where(valid_mask)[0]
 
         for idx in valid_indices:
@@ -532,16 +536,17 @@ class RandomAffine(Augmentation):
             new_xc = (x1_new + x2_new) / 2.0
             new_yc = (y1_new + y2_new) / 2.0
 
-            # Mark degenerate boxes (no visible area)
+            # Mark degenerate boxes (no visible area) — invalidate them
             if new_w <= 0.0 or new_h <= 0.0:
                 new_boxes[idx] = torch.tensor([-1.0, -1.0, -1.0, -1.0])
+                new_valid_mask[idx] = False
             else:
                 new_boxes[idx, 0] = new_xc
                 new_boxes[idx, 1] = new_yc
                 new_boxes[idx, 2] = new_w
                 new_boxes[idx, 3] = new_h
 
-        return new_boxes
+        return new_boxes, new_valid_mask
 
     def __repr__(self) -> str:
         return (

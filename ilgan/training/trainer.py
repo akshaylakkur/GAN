@@ -495,7 +495,36 @@ class ILGANTrainer:
             box_encoder=self.box_encoder,
         )
 
-        # ── 3. Training loop ─────────────────────────────────────────────
+        # ── 3. Pre-training sample grid ────────────────────────────────────
+        # Generate a sample grid with bounding boxes on untrained weights
+        # so we can see what the model looks like before any training.
+        self.logger.info("Generating pre-training sample grid (untrained weights)...")
+        try:
+            from ilgan.training.val_epoch import _generate_sample_grid
+
+            pre_train_z: torch.Tensor = torch.randn(
+                16, self.latent_dim, device=self.device
+            )
+            self.generator.eval()
+            with torch.no_grad():
+                _generate_sample_grid(
+                    generator=self.generator,
+                    fixed_z=pre_train_z,
+                    epoch=-1,  # Special label for pre-training
+                    log_dir=str(self.config.paths.log_dir),
+                    image_size=self.image_size,
+                    nrow=4,
+                )
+            self.logger.info(
+                f"  Pre-training sample grid saved to "
+                f"{self.config.paths.log_dir}/sample_grid_boxes_epoch_-0001.png"
+            )
+            self.generator.train()
+        except Exception as e:
+            self.logger.warning(f"  Pre-training sample grid generation failed (non-critical): {e}")
+        # ──────────────────────────────────────────────────────────────────
+
+        # ── 5. Training loop ─────────────────────────────────────────────
         training_start_time: float = time.time()
         final_val_metrics: Optional[Dict[str, Any]] = None
 
@@ -503,10 +532,10 @@ class ILGANTrainer:
             for epoch in range(self.start_epoch, self.epochs):
                 epoch_start_time: float = time.time()
 
-                # ── 3a. Set epoch for deterministic augmentation ──────────
+                # ── 5a. Set epoch for deterministic augmentation ──────────
                 train_loader.set_epoch(epoch)
 
-                # ── 3b. Train one epoch ───────────────────────────────────
+                # ── 5b. Train one epoch ───────────────────────────────────
                 self.global_step, epoch_losses = train_epoch(
                     generator=self.generator,
                     discriminator=self.discriminator,
@@ -525,11 +554,11 @@ class ILGANTrainer:
                     grad_clip_norm=self.grad_clip_norm,
                 )
 
-                # ── 3c. Step schedulers ───────────────────────────────────
+                # ── 5c. Step schedulers ───────────────────────────────────
                 self.g_scheduler.step()
                 self.d_scheduler.step()
 
-                # ── 3d. Log epoch summary ─────────────────────────────────
+                # ── 5d. Log epoch summary ─────────────────────────────────
                 epoch_time: float = time.time() - epoch_start_time
                 self._log_epoch_summary(
                     epoch=epoch,
@@ -537,7 +566,7 @@ class ILGANTrainer:
                     epoch_losses=epoch_losses,
                 )
 
-                # ── 3e. Validation every eval_interval epochs ─────────────
+                # ── 5e. Validation every eval_interval epochs ─────────────
                 if (epoch + 1) % self.eval_interval == 0 or epoch == self.epochs - 1:
                     val_metrics = self._validate(
                         val_loader=val_loader,
@@ -555,7 +584,7 @@ class ILGANTrainer:
                                 f"(epoch {epoch})"
                             )
 
-                # ── 3f. Save checkpoint every save_interval epochs ────────
+                # ── 5f. Save checkpoint every save_interval epochs ────────
                 if (epoch + 1) % self.save_interval == 0 or epoch == self.epochs - 1:
                     self._save_checkpoint(epoch=epoch)
 

@@ -50,6 +50,11 @@ from ilgan.losses import LossAggregator
 from ilgan.metrics.joint_metrics import MetricsTracker
 from ilgan.utils.config import Config
 from ilgan.utils.logger import Logger
+from ilgan.utils.visualization import draw_boxes_on_image  # noqa: F811
+from ilgan.data.streaming_voc import VOC_CLASSES
+
+import numpy as np
+from PIL import Image
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -560,6 +565,8 @@ def _generate_sample_grid(
     3. Creates a grid using ``torchvision.utils.make_grid``.
     4. Saves the grid as ``sample_grid_epoch_{epoch:04d}.png`` in the log
        directory.
+    5. Also saves a grid with predicted bounding boxes drawn on each image
+       as ``sample_grid_boxes_epoch_{epoch:04d}.png``.
 
     Parameters
     ----------
@@ -593,18 +600,48 @@ def _generate_sample_grid(
     # Generate images from fixed latents
     gen_outputs: Dict[str, Any] = generator(fixed_z)
     fake_images: torch.Tensor = gen_outputs["image"]  # [N, 3, H, W], values in [-1, 1]
+    pred_boxes: torch.Tensor = gen_outputs["boxes"]  # [N, max_boxes, 4]
+    class_logits: torch.Tensor = gen_outputs["class_logits"]  # [N, max_boxes, C]
+    confidences: torch.Tensor = gen_outputs["confidences"]  # [N, max_boxes, 1]
+    pred_labels: torch.Tensor = class_logits.argmax(dim=-1)  # [N, max_boxes]
 
-    # Normalise from [-1, 1] to [0, 1] for save_image
+    # ── Save plain image grid (no boxes) ────────────────────────────────
     grid_images: torch.Tensor = (fake_images + 1.0) / 2.0
     grid_images = torch.clamp(grid_images, 0.0, 1.0)
-
-    # Create the grid
     grid: torch.Tensor = make_grid(grid_images, nrow=nrow, padding=2, normalize=False)
-
-    # Save the grid
     filename: str = f"sample_grid_epoch_{epoch:04d}.png"
     filepath: str = os.path.join(log_dir, filename)
     save_image(grid, filepath)
+
+    # ── Save box-overlaid grid ──────────────────────────────────────────
+    # Draw bounding boxes on each generated image using the visualisation
+    # utility, then tile them into a grid and save.
+    N = fake_images.size(0)
+    annotated_pils: List[Image.Image] = []
+
+    for b in range(N):
+        pil_img = draw_boxes_on_image(
+            image_tensor=fake_images[b],
+            boxes=pred_boxes[b],
+            confidences=confidences[b],
+            labels=pred_labels[b],
+            class_names=VOC_CLASSES,
+            confidence_threshold=0.3,  # Show all reasonably confident boxes
+        )
+        annotated_pils.append(pil_img)
+
+    # Convert PIL images to tensors for grid creation
+    annotated_tensors: List[torch.Tensor] = []
+    for pil_img in annotated_pils:
+        np_img = np.array(pil_img, dtype=np.float32) / 255.0  # [H, W, 3], [0, 1]
+        tensor_img = torch.from_numpy(np_img).permute(2, 0, 1)  # [3, H, W]
+        annotated_tensors.append(tensor_img)
+
+    batch_tensor = torch.stack(annotated_tensors, dim=0)  # [N, 3, H, W]
+    boxes_grid: torch.Tensor = make_grid(batch_tensor, nrow=nrow, padding=2, normalize=False)
+    boxes_filename: str = f"sample_grid_boxes_epoch_{epoch:04d}.png"
+    boxes_filepath: str = os.path.join(log_dir, boxes_filename)
+    save_image(boxes_grid, boxes_filepath)
 
     return os.path.abspath(filepath)
 

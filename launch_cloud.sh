@@ -150,7 +150,44 @@ ssh -t -o StrictHostKeyChecking=no -i "$PEM_PATH" "$SSH_USER@$INSTANCE_IP" << 'P
 PYDEPS
 log "Python dependencies installed"
 
-# ── 4. Create training script ──────────────────────────────────────────────
+# ── 4. Download VOC dataset (local, not streaming) ─────────────────────────
+info "Downloading and preparing VOC 2012 dataset..."
+ssh -t -o StrictHostKeyChecking=no -i "$PEM_PATH" "$SSH_USER@$INSTANCE_IP" << 'DOWNLOADVOC'
+    set -euo pipefail
+    cd ~/ilgan
+    source .venv/bin/activate
+
+    # Download + extract + convert to YOLO format.
+    # This is a one-time cost (~2GB download, ~2GB extracted).
+    # The download_voc.py script handles:
+    #   - Resumable downloads (safe to interrupt and re-run)
+    #   - SHA-256 verification of the tar archive
+    #   - Atomic extraction (temp dir, then rename)
+    #   - Idempotency (safe to re-run, skips already-done work)
+    #   - Progress bars via tqdm
+    #
+    # The prepared dataset goes to ./data/voc/ in YOLO format:
+    #   data/voc/images/   — JPEG images
+    #   data/voc/labels/   — YOLO .txt files (class_id xc yc w h)
+    #   data/voc/train.txt — training split stems
+    #   data/voc/val.txt   — validation split stems
+    #
+    # This is MUCH faster during training than streaming because:
+    #   - All data is on local SSD (no network I/O per batch)
+    #   - OS page cache keeps hot files in RAM
+    #   - No tar extraction overhead per sample
+    #   - DataLoader workers read directly from disk
+
+    python -m ilgan.scripts.download_voc \
+        --output-dir ./data/voc \
+        --download-dir ./data/voc \
+        --resume
+
+    echo "VOC dataset prepared at ./data/voc"
+DOWNLOADVOC
+log "VOC dataset downloaded and prepared"
+
+# ── 5. Create training script ──────────────────────────────────────────────
 info "Creating training launch script..."
 ssh -t -o StrictHostKeyChecking=no -i "$PEM_PATH" "$SSH_USER@$INSTANCE_IP" \
     "cat > ~/ilgan/run_training.sh" << 'TRAINSCRIPT'
@@ -171,9 +208,9 @@ NUM_GPUS=$(python3 -c "import torch; print(torch.cuda.device_count())" 2>/dev/nu
 echo "Detected $NUM_GPUS GPU(s)"
 
 # ── Build the training command ───────────────────────────────────────────────
-# We use the streaming VOC dataset which downloads on-the-fly.
-# The --data-root is ignored when streaming is enabled; we pass it
-# via a config override.
+# We use the local VOC dataset (pre-downloaded and converted to YOLO format
+# by the download_voc.py script in step 4). This is faster than streaming
+# because all data is on local SSD with no network I/O during training.
 
 TRAIN_CMD="ilgan train"
 
@@ -185,16 +222,16 @@ if [ "$NUM_GPUS" -gt 1 ]; then
 fi
 
 # ── Launch training ──────────────────────────────────────────────────────────
-# We use a custom config that enables streaming VOC and sets VOC-specific params
+# Local dataset config (no streaming — data is on local SSD)
 cat > /tmp/voc_config.yaml << 'VOCCFG'
-# Streaming VOC 2012 configuration for ILGAN
+# Local VOC 2012 configuration for ILGAN
+# Data is pre-downloaded and converted to YOLO format in ./data/voc/
 data:
   image_size: 128
   batch_size: 32
   num_workers: 8
-  use_streaming: true
-  streaming_dataset: "voc"
-  streaming_cache_size: 512
+  use_streaming: false          # Use local YOLODataset, not streaming
+  yolo_format: true
 
 model:
   latent_dim: 256
@@ -237,21 +274,24 @@ logging:
   sample_dir: "./samples"
 
 paths:
+  data_root: "./data/voc"       # Local YOLO-format dataset
   checkpoint_dir: "./checkpoints"
   log_dir: "./logs"
 VOCCFG
 
 # Run training
 echo "=========================================="
-echo "  ILGAN Training — VOC 2012 (streaming)"
+echo "  ILGAN Training — VOC 2012 (local SSD)"
 echo "  GPUs: $NUM_GPUS"
 echo "  Image size: 128"
 echo "  Batch size: 32"
 echo "  Epochs: 2000"
+echo "  Data: ./data/voc (local, pre-downloaded)"
 echo "=========================================="
 
 $TRAIN_CMD \
     --config /tmp/voc_config.yaml \
+    --data-root ./data/voc \
     --image-size 128 \
     --batch-size 32 \
     --num-classes 20 \

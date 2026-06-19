@@ -449,38 +449,41 @@ def feature_diversity_loss(feature_maps: List[torch.Tensor]) -> torch.Tensor:
         if num_spatial <= 1:
             continue
 
-        # ── 1. Reshape to [B, C, HW] and transpose to [B, HW, C] ──────
-        f_flat = fmap.view(B, C, num_spatial)  # [B, C, HW]
-        f_flat = f_flat.transpose(1, 2)        # [B, HW, C]
+        # ── 0. Subsample spatial positions to cap memory ───────────────
+        # The pairwise similarity matrix is [B, num_spatial, num_spatial].
+        # For large spatial sizes (e.g. 64x64 = 4096), this is ~128 MB
+        # per batch element.  We subsample to at most MAX_SPATIAL_SAMPLES
+        # to avoid OOM on memory-constrained devices (MPS / small GPUs).
+        MAX_SPATIAL_SAMPLES = 256
+        if num_spatial > MAX_SPATIAL_SAMPLES:
+            with torch.no_grad():
+                # Randomly sample spatial indices (same across batch)
+                idx = torch.randperm(num_spatial, device=fmap.device)[:MAX_SPATIAL_SAMPLES]
+            # Subsample: [B, C, H, W] -> flatten spatial dim -> [B, C, HW] -> index -> [B, C, K]
+            f_flat = fmap.view(B, C, num_spatial)        # [B, C, HW]
+            f_flat = f_flat[:, :, idx]                    # [B, C, K]
+            K = MAX_SPATIAL_SAMPLES
+        else:
+            f_flat = fmap.view(B, C, num_spatial)        # [B, C, HW]
+            K = num_spatial
+
+        f_flat = f_flat.transpose(1, 2)                  # [B, K, C]
 
         # ── 2. Normalise each spatial feature vector to unit norm ──────
-        f_norm = F.normalize(f_flat, p=2, dim=-1)  # [B, HW, C]
+        f_norm = F.normalize(f_flat, p=2, dim=-1)        # [B, K, C]
 
         # ── 3. Compute pairwise cosine similarity matrix ───────────────
         # S[b, i, j] = f_norm[b, i] · f_norm[b, j]
-        # Shape: [B, HW, HW]
+        # Shape: [B, K, K]
         sim_matrix = torch.bmm(f_norm, f_norm.transpose(1, 2))
 
         # ── 4. Take absolute value of off-diagonal entries ─────────────
-        # Number of off-diagonal entries per batch: HW * (HW - 1)
-        # We can compute the sum of absolute values of all entries minus
-        # the diagonal (which is 1.0 for normalised vectors).
-        abs_sim = sim_matrix.abs()  # [B, HW, HW]
-
-        # Sum of all entries
-        total_sum = abs_sim.sum(dim=(1, 2))  # [B]
-
-        # Subtract the diagonal (which is 1.0 for each position)
-        diag_sum = float(num_spatial)  # sum of 1.0 for each diagonal entry
-        off_diag_sum = total_sum - diag_sum  # [B]
-
-        # Number of off-diagonal entries
-        num_off_diag = num_spatial * (num_spatial - 1)
-
-        # Mean absolute off-diagonal similarity per batch element
+        abs_sim = sim_matrix.abs()                       # [B, K, K]
+        total_sum = abs_sim.sum(dim=(1, 2))              # [B]
+        diag_sum = float(K)
+        off_diag_sum = total_sum - diag_sum              # [B]
+        num_off_diag = K * (K - 1)
         mean_abs_sim = off_diag_sum / float(num_off_diag)  # [B]
-
-        # Mean over batch
         map_loss = mean_abs_sim.mean()
 
         total_loss = total_loss + map_loss
